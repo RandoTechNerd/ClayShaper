@@ -19,12 +19,14 @@ GCODE_DIR = os.path.join(HERE, "assets", "gcodes")
 RENDER_CACHE = os.path.join(HERE, "sample_thumbs")   # runtime cache (uploads)
 
 # name -> category for the bundled set; anything new dropped into assets/models
-# shows up under "Classics".
+# shows up under "Classics". These four are ClayShaper's own models (generated
+# by tools/make_samples.py) so the app ships with a gallery we can distribute.
 _CATEGORIES = {
-    "Bowl": "Classics",
-    "Taco Bell Bag": "Classics",
-    "Spiral Vase": "Vase",
-    "Octopus Vase": "Vase",
+    "Coil Bowl": "Classics",
+    "Ripple Cup": "Classics",
+    "Cuboid": "Classics",      # RandoTechNerd original
+    "Belly Vase": "Vase",
+    "Twist Pot": "Vase",
 }
 
 BASE_COLOR = (33, 150, 243)

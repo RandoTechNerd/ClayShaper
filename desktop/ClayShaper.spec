@@ -41,7 +41,10 @@ exe = EXE(
     upx=True,
     upx_exclude=[],
     runtime_tmpdir=None,
-    console=True,          # the console window is the "keep me open" control
+    # No console: the app opens as a Chrome/Edge "app window" and quits when
+    # that window closes, so there's nothing for a console to do but look
+    # unfinished. Failures are reported with a message box instead.
+    console=False,
     disable_windowed_traceback=False,
     argv_emulation=False,
     target_arch=None,

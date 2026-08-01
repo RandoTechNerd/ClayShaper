@@ -10,10 +10,8 @@ wheel_profile.json
 _upload.stl
 sample_thumbs/
 
-# Sample models are not redistributed (see README) — drop your own in here.
-web/assets/models/*.stl
-web/assets/gcodes/*.gcode
-web/assets/thumbs/*.png
+# NOTE: the bundled sample models are ClayShaper's own (tools/make_samples.py)
+# plus a RandoTechNerd original, so they DO ship with the repo.
 
 .DS_Store
 Thumbs.db
