@@ -3,7 +3,18 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>ClayShaper — free ceramic slicer, in your browser</title>
+    <title>ClayShaper</title>
+
+    <!-- Desktop app window: Chrome tints the title bar from theme-color, and
+         takes the taskbar / title-bar icon from these. Without them the app
+         window shows a generic globe on a default-blue bar. -->
+    <meta name="theme-color" content="#B0603C" />
+    <link rel="icon" href="./favicon.ico" sizes="any" />
+    <link rel="icon" type="image/png" sizes="32x32" href="./icon-32.png" />
+    <link rel="icon" type="image/png" sizes="192x192" href="./icon-192.png" />
+    <link rel="icon" type="image/png" sizes="512x512" href="./icon-512.png" />
+    <link rel="apple-touch-icon" href="./icon-192.png" />
+
     <!-- Open the CDN connections before the module parser asks for them, and
          start the (large) engine script downloading in parallel with the CSS. -->
     <link rel="preconnect" href="https://cdn.jsdelivr.net" crossorigin />

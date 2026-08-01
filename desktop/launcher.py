@@ -64,6 +64,28 @@ def find_browser():
     return None
 
 
+def browser_using_profile():
+    """Is any browser process still running against ClayShaper's profile?
+
+    Used when the browser we launched hands its window to an instance that was
+    already open: the process we can wait on has gone, but the app window is
+    very much alive, so the server has to stay up.
+    """
+    marker = os.path.join(APP_NAME, "browser")
+    try:
+        out = subprocess.run(
+            ["powershell", "-NoProfile", "-Command",
+             "(Get-CimInstance Win32_Process -Filter \"Name='chrome.exe' OR "
+             "Name='msedge.exe' OR Name='brave.exe'\" -ErrorAction SilentlyContinue "
+             "| Where-Object { $_.CommandLine -like '*" + marker + "*' } "
+             "| Measure-Object).Count"],
+            capture_output=True, text=True, timeout=15,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+        return int((out.stdout or "0").strip() or 0) > 0
+    except Exception:
+        return False       # can't tell -> don't hang around forever
+
+
 def fatal(message):
     """Show a real dialog — there's no console window to print to."""
     try:
@@ -116,7 +138,7 @@ def main():
     browser = find_browser()
     if browser:
         # App mode: no address bar, no tab strip — a plain application window.
-        proc = subprocess.Popen([
+        args = [
             browser,
             f"--app={url}",
             f"--user-data-dir={profile_dir()}",
@@ -124,13 +146,27 @@ def main():
             "--no-first-run",
             "--no-default-browser-check",
             "--disable-features=Translate,AutofillServerCommunication",
-        ])
+        ]
+        started = time.time()
+        proc = subprocess.Popen(args)
         try:
-            proc.wait()          # closing the window ends the app
+            proc.wait()
         except KeyboardInterrupt:
-            pass
-        finally:
             srv.shutdown()
+            return
+
+        # A browser already holding this profile takes the window over and the
+        # process we launched returns straight away. Quitting here would kill
+        # the server out from under a window that just opened — so when the
+        # exit is suspiciously fast, hand off: keep serving until no browser is
+        # using our profile any more.
+        if time.time() - started < 5.0:
+            try:
+                while browser_using_profile():
+                    time.sleep(2.0)
+            except KeyboardInterrupt:
+                pass
+        srv.shutdown()
         return
 
     # No Chromium browser: fall back to whatever the system uses.
