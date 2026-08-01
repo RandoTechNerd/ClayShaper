@@ -1,0 +1,156 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>ClayShaper — free ceramic slicer, in your browser</title>
+    <!-- Open the CDN connections before the module parser asks for them, and
+         start the (large) engine script downloading in parallel with the CSS. -->
+    <link rel="preconnect" href="https://cdn.jsdelivr.net" crossorigin />
+    <link rel="dns-prefetch" href="https://cdn.jsdelivr.net" />
+    <link rel="modulepreload"
+      href="https://cdn.jsdelivr.net/npm/@stlite/browser@0.85.1/build/stlite.js" />
+    <link rel="stylesheet"
+      href="https://cdn.jsdelivr.net/npm/@stlite/browser@0.85.1/build/stlite.css" />
+    <style>
+      /* Friendly first-load screen while Pyodide downloads (first visit only) */
+      #boot { position:fixed; inset:0; display:flex; flex-direction:column;
+        align-items:center; justify-content:center; background:#FFFFFF;
+        font-family:'Segoe UI',sans-serif; z-index:9999; transition:opacity .4s; }
+      #boot .wm { font-size:2.4rem; font-weight:700; color:#1A1A1A; }
+      #boot .wm span { color:#B0603C; }
+      #boot .sub { color:#8A8178; margin-top:6px; font-size:0.95rem; }
+      #boot .bar { width:260px; height:6px; background:#EEE7DF; border-radius:3px;
+        margin-top:18px; overflow:hidden; }
+      #boot .bar i { display:block; height:100%; width:38%; background:#B0603C;
+        border-radius:3px; animation:slide 1.2s ease-in-out infinite; }
+      @keyframes slide { 0%{margin-left:-40%} 100%{margin-left:100%} }
+
+      /* Instant click feedback: WASM reruns take a couple of seconds and the
+         Streamlit toolbar (with its running indicator) is hidden by the app
+         CSS — without this bar the UI looks dead after a click and users
+         click twice. Shown the moment any button/label is pressed, hidden
+         when the DOM settles. */
+      #busybar { position:fixed; top:0; left:0; right:0; height:4px; z-index:99999;
+        background:#EEE7DF; display:none; }
+      #busybar i { display:block; height:100%; width:34%; background:#B0603C;
+        border-radius:2px; animation:slide 1.0s ease-in-out infinite; }
+      body.cs-busy #busybar { display:block; }
+      body.cs-busy { cursor:progress; }
+    </style>
+  </head>
+  <body>
+    <div id="boot">
+      <div class="wm">Clay<span>Shaper</span></div>
+      <div class="sub">Warming up the kiln — loading Python in your browser…</div>
+      <div class="sub" style="font-size:0.8rem">first visit takes ~20s, then it's cached</div>
+      <div class="bar"><i></i></div>
+    </div>
+    <div id="busybar"><i></i></div>
+    <div id="root"></div>
+    <script type="module">
+      import { mount } from "https://cdn.jsdelivr.net/npm/@stlite/browser@0.85.1/build/stlite.js";
+      const controller = mount(
+        {
+          entrypoint: "app.py",
+          files: {
+            "app.py":             { url: "./app.py?v=2" },
+            "stl_slicer.py":      { url: "./stl_slicer.py?v=2" },
+            "clay_lib.py":        { url: "./clay_lib.py?v=2" },
+            "gcode_validator.py": { url: "./gcode_validator.py?v=2" },
+            "preview3d.py":       { url: "./preview3d.py?v=2" },
+            "brand.py":           { url: "./brand.py?v=2" },
+            "sample_library.py":  { url: "./sample_library.py?v=2" },
+            "nearest.py":         { url: "./nearest.py?v=2" },
+            "assets/models/Bowl.stl":           { url: "./assets/models/Bowl.stl?v=2" },
+            "assets/models/Spiral Vase.stl":    { url: "./assets/models/Spiral Vase.stl?v=2" },
+            "assets/models/Octopus Vase.stl":   { url: "./assets/models/Octopus Vase.stl?v=2" },
+            "assets/models/Taco Bell Bag.stl":  { url: "./assets/models/Taco Bell Bag.stl?v=2" },
+            "assets/thumbs/Bowl.png":           { url: "./assets/thumbs/Bowl.png?v=2" },
+            "assets/thumbs/Spiral Vase.png":    { url: "./assets/thumbs/Spiral Vase.png?v=2" },
+            "assets/thumbs/Octopus Vase.png":   { url: "./assets/thumbs/Octopus Vase.png?v=2" },
+            "assets/thumbs/Taco Bell Bag.png":  { url: "./assets/thumbs/Taco Bell Bag.png?v=2" },
+            "assets/gcodes/Bowl (factory).gcode": { url: "./assets/gcodes/Bowl (factory).gcode?v=2" },
+          },
+          // numpy / scipy / shapely / Pillow ship as prebuilt Pyodide wheels;
+          // trimesh / plotly / networkx are pure-Python via micropip.
+          // networkx: trimesh needs it to chain section edges into paths.
+          // scipy: REQUIRED — trimesh.section() -> edges_to_path() imports it
+          // internally. Dropping it silently breaks STL slicing (every section
+          // throws and the slicer returns zero layers). Our own engine code no
+          // longer calls scipy directly (see nearest.py), but trimesh does.
+          requirements: ["numpy", "scipy", "shapely", "trimesh", "plotly", "networkx", "Pillow"],
+          // stlite does NOT read .streamlit/config.toml — the theme has to be
+          // passed here, or widgets fall back to Streamlit's default red
+          // (sliders, checkmarks, focus rings) instead of the clay palette.
+          streamlitConfig: {
+            "theme.primaryColor": "#B0603C",          // terracotta
+            "theme.backgroundColor": "#FFFFFF",
+            "theme.secondaryBackgroundColor": "#F7F5F2",
+            "theme.textColor": "#3B3B3B",
+            "theme.font": "sans serif",
+          },
+        },
+        document.getElementById("root")
+      );
+      window.__ctrl = controller;
+
+      // Hide the boot screen once the app has painted real content.
+      const bootTimer = setInterval(() => {
+        const root = document.getElementById("root");
+        if (root && root.innerText.trim().length > 40) {
+          const b = document.getElementById("boot");
+          b.style.opacity = "0";
+          setTimeout(() => b.remove(), 450);
+          clearInterval(bootTimer);
+        }
+      }, 700);
+
+      // Busy feedback: show the bar as soon as any control is pressed, hide
+      // once the app's DOM has settled (no mutations for 600ms). Guarantees a
+      // minimum display so it never just flickers.
+      (function () {
+        const root = document.getElementById("root");
+        let shownAt = 0, settleTimer = null, minTimer = null;
+        const obs = new MutationObserver(() => {
+          if (!document.body.classList.contains("cs-busy")) return;
+          clearTimeout(settleTimer);
+          settleTimer = setTimeout(hide, 600);
+        });
+        obs.observe(root, { childList: true, subtree: true, characterData: true });
+        function show() {
+          shownAt = Date.now();
+          document.body.classList.add("cs-busy");
+          clearTimeout(settleTimer);
+          // Safety: never stay busy longer than 30s even if nothing mutates.
+          settleTimer = setTimeout(hide, 30000);
+        }
+        function hide() {
+          const left = 500 - (Date.now() - shownAt);
+          clearTimeout(minTimer);
+          if (left > 0) { minTimer = setTimeout(hide, left); return; }
+          document.body.classList.remove("cs-busy");
+        }
+        root.addEventListener("click", (e) => {
+          if (e.target.closest("button, [role='radio'], [role='checkbox'], label")) show();
+        }, true);
+      })();
+
+      // Virtual Wheel bridge: the drawing-canvas iframe postMessages its
+      // sampled profile; we write it into the Pyodide filesystem so Python's
+      // "Spin it!" reads a fresh wheel_profile.json on the next rerun.
+      window.addEventListener("message", async (e) => {
+        const d = e.data;
+        if (!d || d.type !== "clay_profile") return;
+        try {
+          await controller.writeFile(
+            "wheel_profile.json",
+            JSON.stringify({ profile: d.profile, png: d.png || null, ts: Date.now() })
+          );
+        } catch (err) {
+          console.error("clay writeFile failed", err);
+        }
+      });
+    </script>
+  </body>
+</html>

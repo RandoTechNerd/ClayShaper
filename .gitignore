@@ -1,0 +1,19 @@
+__pycache__/
+*.pyc
+build/
+dist/
+*.spec.bak
+
+# Runtime / user data
+custom_printers.json
+wheel_profile.json
+_upload.stl
+sample_thumbs/
+
+# Sample models are not redistributed (see README) — drop your own in here.
+web/assets/models/*.stl
+web/assets/gcodes/*.gcode
+web/assets/thumbs/*.png
+
+.DS_Store
+Thumbs.db
