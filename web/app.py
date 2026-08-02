@@ -1070,10 +1070,16 @@ with st.sidebar:
             # and a vase can have a real neck instead of one fixed silhouette.
             if shape_type == "Bowl":
                 bowl_flare = st.slider(
-                    "Rim flare (rim ÷ foot)", 1.2, 2.6, 2.0, 0.1,
-                    help="How far the bowl opens out from its foot. 1.2 is a "
-                         "steep-sided bowl, 2.6 is a wide shallow one.")
-                shape_profile_fn = lambda t, r: profile_bowl(t, r, flare=bowl_flare)
+                    "Rim flare (rim ÷ foot)", 0.6, 2.6, 1.0, 0.05,
+                    help="Rim width compared with the base. 1.0 keeps them "
+                         "equal, above 1.0 opens out into a wide bowl.")
+                bowl_belly = st.slider(
+                    "Belly (roundness)", 0.0, 0.9, 0.45, 0.05,
+                    help="How far the middle bows outward. Leave the flare at "
+                         "1.0 and raise this for a rounded bowl whose base and "
+                         "rim match.")
+                shape_profile_fn = lambda t, r: profile_bowl(
+                    t, r, flare=bowl_flare, belly=bowl_belly)
             elif shape_type == "Vase":
                 vase_belly = st.slider(
                     "Belly", 0.0, 0.9, 0.45, 0.05,

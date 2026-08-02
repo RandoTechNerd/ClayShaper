@@ -287,14 +287,21 @@ def profile_cylinder(t, r_base, taper=1.0):
     return r_base * (1.0 + (taper - 1.0) * t)
 
 
-def profile_bowl(t, r_base, flare=2.0):
-    """A bowl: opens quickly off the foot, then eases out towards the rim.
+def profile_bowl(t, r_base, flare=1.0, belly=0.45):
+    """A bowl, from its foot (t=0) to its rim (t=1).
 
-    The curve matters. A linear r_base * (1 + t) is a straight sided cone,
-    which is what this used to produce and why bowls looked like plant pots.
-    Easing with sin gives the rounded belly you expect from a thrown bowl.
+    Two independent controls, because one was not enough to describe a bowl:
+      flare  rim radius as a fraction of the foot. 1.0 keeps the rim the same
+             width as the base; above 1.0 opens out.
+      belly  how far the middle bows past that line, which is what makes a
+             bowl look thrown rather than machined.
+
+    With flare=1.0 the result is a rounded barrel: base and rim equal, widest
+    across the middle. A linear r_base * (1 + t), the original formula, was a
+    straight sided cone and could not produce this shape at any setting.
     """
-    return r_base * (1.0 + (flare - 1.0) * math.sin(t * math.pi / 2.0))
+    ease = math.sin(t * math.pi / 2.0)          # quick off the foot, easing to the rim
+    return r_base * ((1.0 - ease) + flare * ease + belly * math.sin(math.pi * t))
 
 
 def profile_vase(t, r_base, belly=0.45, neck=0.65):
