@@ -1065,15 +1065,32 @@ with st.sidebar:
                 help="Points per revolution. Higher = smoother walls (less faceting on wide pots), but more G-code.",
             )
 
+            # Keep the design on the bed. The profile decides how far the wall
+            # flares past the base radius (a bowl doubles it), so the slider
+            # range has to account for that or the default bowl is 240 mm wide
+            # on a 165 mm bed and every layer fails the bounds check.
+            _flare = {"Bowl": 2.0, "Vase": 1.5, "Cylinder": 1.0,
+                      "Virtual Wheel": 1.0}.get(shape_type, 1.0)
+            _bed_r = min(profile["bed_x"], profile["bed_y"]) / 2.0
+            _r_fits = max(20.0, round((_bed_r - 6.0) / _flare, 1))   # 6 mm margin
+            _r_default = min(60.0, _r_fits)
+
             if shape_type == "Virtual Wheel":
                 st.subheader("Dimensions")
-                body_base_radius = st.slider("Max Radius (Width) (mm)", 20.0, 150.0, 60.0)
-                height = st.slider("Total Height (mm)", 20.0, 400.0, 120.0)
-
+                body_base_radius = st.slider("Max Radius (Width) (mm)", 20.0,
+                                             _r_fits, _r_default)
+                height = st.slider("Total Height (mm)", 20.0,
+                                   float(profile["max_z"]), 120.0)
             else:
                 st.subheader("Main Body")
-                body_base_radius = st.slider("Body Base Radius (mm)", 20.0, 150.0, 60.0)
-                height = st.slider("Total Height (mm)", 20.0, 400.0, 120.0)
+                body_base_radius = st.slider(
+                    "Body Base Radius (mm)", 20.0, _r_fits, _r_default,
+                    help="Radius at the bottom of the wall. The range is capped "
+                         "to what fits your printer's bed for this shape.")
+                height = st.slider("Total Height (mm)", 20.0,
+                                   float(profile["max_z"]), 120.0)
+            st.caption(f"Widest point: ⌀{2 * body_base_radius * _flare:.0f} mm "
+                       f"(bed fits ⌀{2 * _bed_r:.0f} mm)")
 
             st.subheader("Solid Base")
             base_h = st.slider("Base Height (mm)", 0.0, 20.0, 4.0, step=layer_h)
