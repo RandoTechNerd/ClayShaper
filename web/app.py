@@ -1065,12 +1065,42 @@ with st.sidebar:
                 help="Points per revolution. Higher = smoother walls (less faceting on wide pots), but more G-code.",
             )
 
-            # Keep the design on the bed. The profile decides how far the wall
-            # flares past the base radius (a bowl doubles it), so the slider
-            # range has to account for that or the default bowl is 240 mm wide
-            # on a 165 mm bed and every layer fails the bounds check.
-            _flare = {"Bowl": 2.0, "Vase": 1.5, "Cylinder": 1.0,
-                      "Virtual Wheel": 1.0}.get(shape_type, 1.0)
+            # Shape controls. Each profile gets the handful of numbers that
+            # actually change its character, so a bowl can be shallow or deep
+            # and a vase can have a real neck instead of one fixed silhouette.
+            if shape_type == "Bowl":
+                bowl_flare = st.slider(
+                    "Rim flare (rim ÷ foot)", 1.2, 2.6, 2.0, 0.1,
+                    help="How far the bowl opens out from its foot. 1.2 is a "
+                         "steep-sided bowl, 2.6 is a wide shallow one.")
+                shape_profile_fn = lambda t, r: profile_bowl(t, r, flare=bowl_flare)
+            elif shape_type == "Vase":
+                vase_belly = st.slider(
+                    "Belly", 0.0, 0.9, 0.45, 0.05,
+                    help="How far the middle swells past the foot.")
+                vase_neck = st.slider(
+                    "Neck (rim ÷ foot)", 0.3, 1.2, 0.65, 0.05,
+                    help="Rim width compared with the foot. Below 1.0 draws "
+                         "the top back in, which is what makes it a vase.")
+                shape_profile_fn = lambda t, r: profile_vase(
+                    t, r, belly=vase_belly, neck=vase_neck)
+            elif shape_type == "Cylinder":
+                cyl_taper = st.slider(
+                    "Taper (rim ÷ foot)", 0.6, 1.6, 1.0, 0.05,
+                    help="1.0 is straight sided. Above 1.0 opens out like a "
+                         "tumbler, below 1.0 draws in.")
+                shape_profile_fn = lambda t, r: profile_cylinder(t, r, taper=cyl_taper)
+            else:
+                shape_profile_fn = None      # Virtual Wheel: drawn by the user
+
+            # Keep the design on the bed. How far the wall swings out from the
+            # base radius depends on the profile AND the sliders above, so
+            # measure the real curve rather than assuming a fixed multiplier.
+            if shape_profile_fn is not None:
+                _flare = max(shape_profile_fn(i / 40.0, 1.0) for i in range(41))
+            else:
+                _flare = 1.0
+            _flare = max(_flare, 0.05)
             _bed_r = min(profile["bed_x"], profile["bed_y"]) / 2.0
             _r_fits = max(20.0, round((_bed_r - 6.0) / _flare, 1))   # 6 mm margin
             _r_default = min(60.0, _r_fits)
@@ -1744,10 +1774,11 @@ grid();
 
 
 # --- GENERATION ---
+# Cylinder / Bowl / Vase come from the sidebar's shape sliders, so the preview
+# matches the numbers the user is actually holding.
 prof_func = None
-if shape_type == "Cylinder": prof_func = profile_cylinder
-elif shape_type == "Bowl": prof_func = profile_bowl
-elif shape_type == "Vase": prof_func = profile_vase
+if shape_type in ("Cylinder", "Bowl", "Vase"):
+    prof_func = shape_profile_fn
 elif shape_type == "Virtual Wheel" and custom_profile_data is not None:
     # Interpolate from the custom profile array
     def profile_custom(t, r_max):

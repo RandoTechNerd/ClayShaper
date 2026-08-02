@@ -280,20 +280,32 @@ def generate_handle_path(style="Half Circle", width=60.0, height=35.0,
 
 
 # --- HELPERS ---
-def profile_cylinder(t, r_base): 
-    return r_base
+# Wall profiles: r(t) for t = 0 at the foot to t = 1 at the rim.
 
-def profile_bowl(t, r_base): 
-    # Adjusted: Starts at r_base (1.0) and flares out to 2.0 * r_base
-    return r_base * (1.0 + 1.0 * t) 
+def profile_cylinder(t, r_base, taper=1.0):
+    """Straight wall, optionally tapered (taper is the rim vs foot ratio)."""
+    return r_base * (1.0 + (taper - 1.0) * t)
 
-def profile_vase(t, r_base): 
-    # Adjusted: Starts at r_base (1.0)
-    # t=0 -> 1.0
-    # t=0.5 -> 1.5 (Belly)
-    # t=1.0 -> 0.8 (Neck)
-    # Simple sine curve starting at 0
-    return r_base * (1.0 + 0.5 * math.sin(t * math.pi))
+
+def profile_bowl(t, r_base, flare=2.0):
+    """A bowl: opens quickly off the foot, then eases out towards the rim.
+
+    The curve matters. A linear r_base * (1 + t) is a straight sided cone,
+    which is what this used to produce and why bowls looked like plant pots.
+    Easing with sin gives the rounded belly you expect from a thrown bowl.
+    """
+    return r_base * (1.0 + (flare - 1.0) * math.sin(t * math.pi / 2.0))
+
+
+def profile_vase(t, r_base, belly=0.45, neck=0.65):
+    """A vase: swells at the belly, then draws back in to a narrower neck.
+
+    `neck` is the rim radius as a fraction of the foot. The old version added
+    a sine bulge only, and since sin(pi) is 0 the rim came back to the full
+    foot radius, so it never actually necked in.
+    """
+    taper = (1.0 - t) + neck * t                     # foot -> neck
+    return r_base * (taper + belly * math.sin(math.pi * t))
 
 def texture_sine_waves(t, angle, freq=10, amp=2.0): return amp * math.sin(angle * freq)
 def texture_twist(t, angle, twist_factor=2.0, ridges=5, amp=3.0):
