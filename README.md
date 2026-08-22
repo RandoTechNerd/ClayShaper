@@ -57,7 +57,7 @@ browser tab, so your designs stay private. Works on Windows, Mac, and Linux.
 ## What it does
 
 **Slice a 3D model**
-Load an STL file (or pick one of the five included samples) and get a clay
+Load an STL or 3MF file (or pick one of the five included samples) and get a clay
 toolpath. Vase mode prints the whole wall as one unbroken spiral. The staggered
 base lays the bottom down so it grips instead of peeling. Fold softening tames
 steep creases so crumpled shapes still print.

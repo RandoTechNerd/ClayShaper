@@ -65,25 +65,25 @@
         {
           entrypoint: "app.py",
           files: {
-            "app.py":             { url: "./app.py?v=7" },
-            "stl_slicer.py":      { url: "./stl_slicer.py?v=7" },
-            "clay_lib.py":        { url: "./clay_lib.py?v=7" },
-            "gcode_validator.py": { url: "./gcode_validator.py?v=7" },
-            "preview3d.py":       { url: "./preview3d.py?v=7" },
-            "brand.py":           { url: "./brand.py?v=7" },
-            "sample_library.py":  { url: "./sample_library.py?v=7" },
-            "nearest.py":         { url: "./nearest.py?v=7" },
-            "assets/models/Coil Bowl.stl":  { url: "./assets/models/Coil Bowl.stl?v=7" },
-            "assets/models/Ripple Cup.stl":  { url: "./assets/models/Ripple Cup.stl?v=7" },
-            "assets/models/Belly Vase.stl":  { url: "./assets/models/Belly Vase.stl?v=7" },
-            "assets/models/Twist Pot.stl":  { url: "./assets/models/Twist Pot.stl?v=7" },
-            "assets/models/Cuboid.stl":  { url: "./assets/models/Cuboid.stl?v=7" },
-            "assets/thumbs/Coil Bowl.png":  { url: "./assets/thumbs/Coil Bowl.png?v=7" },
-            "assets/thumbs/Ripple Cup.png":  { url: "./assets/thumbs/Ripple Cup.png?v=7" },
-            "assets/thumbs/Belly Vase.png":  { url: "./assets/thumbs/Belly Vase.png?v=7" },
-            "assets/thumbs/Twist Pot.png":  { url: "./assets/thumbs/Twist Pot.png?v=7" },
-            "assets/thumbs/Cuboid.png":  { url: "./assets/thumbs/Cuboid.png?v=7" },
-            "assets/gcodes/Coil Bowl (sample).gcode": { url: "./assets/gcodes/Coil Bowl (sample).gcode?v=7" },
+            "app.py":             { url: "./app.py?v=9" },
+            "stl_slicer.py":      { url: "./stl_slicer.py?v=9" },
+            "clay_lib.py":        { url: "./clay_lib.py?v=9" },
+            "gcode_validator.py": { url: "./gcode_validator.py?v=9" },
+            "preview3d.py":       { url: "./preview3d.py?v=9" },
+            "brand.py":           { url: "./brand.py?v=9" },
+            "sample_library.py":  { url: "./sample_library.py?v=9" },
+            "nearest.py":         { url: "./nearest.py?v=9" },
+            "assets/models/Coil Bowl.stl":  { url: "./assets/models/Coil Bowl.stl?v=9" },
+            "assets/models/Ripple Cup.stl":  { url: "./assets/models/Ripple Cup.stl?v=9" },
+            "assets/models/Belly Vase.stl":  { url: "./assets/models/Belly Vase.stl?v=9" },
+            "assets/models/Twist Pot.stl":  { url: "./assets/models/Twist Pot.stl?v=9" },
+            "assets/models/Cuboid.stl":  { url: "./assets/models/Cuboid.stl?v=9" },
+            "assets/thumbs/Coil Bowl.png":  { url: "./assets/thumbs/Coil Bowl.png?v=9" },
+            "assets/thumbs/Ripple Cup.png":  { url: "./assets/thumbs/Ripple Cup.png?v=9" },
+            "assets/thumbs/Belly Vase.png":  { url: "./assets/thumbs/Belly Vase.png?v=9" },
+            "assets/thumbs/Twist Pot.png":  { url: "./assets/thumbs/Twist Pot.png?v=9" },
+            "assets/thumbs/Cuboid.png":  { url: "./assets/thumbs/Cuboid.png?v=9" },
+            "assets/gcodes/Coil Bowl (sample).gcode": { url: "./assets/gcodes/Coil Bowl (sample).gcode?v=9" },
           },
           // numpy / scipy / shapely / Pillow ship as prebuilt Pyodide wheels;
           // trimesh / plotly / networkx are pure-Python via micropip.
@@ -92,7 +92,10 @@
           // internally. Dropping it silently breaks STL slicing (every section
           // throws and the slicer returns zero layers). Our own engine code no
           // longer calls scipy directly (see nearest.py), but trimesh does.
-          requirements: ["numpy", "scipy", "shapely", "trimesh", "plotly", "networkx", "Pillow"],
+          // lxml: trimesh's 3MF reader parses the model XML with it. Desktop
+          // Python usually has it already, so a missing lxml only shows up in
+          // the browser build, as a ModuleNotFoundError on the first 3MF slice.
+          requirements: ["numpy", "scipy", "shapely", "trimesh", "plotly", "networkx", "Pillow", "lxml"],
           // stlite does NOT read .streamlit/config.toml — the theme has to be
           // passed here, or widgets fall back to Streamlit's default red
           // (sliders, checkmarks, focus rings) instead of the clay palette.

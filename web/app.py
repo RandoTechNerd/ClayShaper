@@ -288,7 +288,10 @@ def model_thumb_b64(kind, name, payload):
         return cache[h]
     b64 = None
     try:
-        with tempfile.NamedTemporaryFile(suffix=".stl", delete=False) as tmp:
+        # trimesh picks its loader from the file extension, so a .3mf staged
+        # as .stl would fail to parse.
+        with tempfile.NamedTemporaryFile(
+                suffix=st.session_state.get("model_ext", ".stl"), delete=False) as tmp:
             tmp.write(payload)
             tp = tmp.name
         b64 = get_thumbnail_b64(tp)
@@ -792,7 +795,7 @@ st.markdown(f"""
         color: {ACC};
     }}
     .st-key-stl_dropzone [data-testid="stFileUploaderDropzone"]::after {{
-        content: "Drop your STL here — or click anywhere to browse";
+        content: "Drop your STL or 3MF here — or click anywhere to browse";
         font-size: 1.05rem;
         color: {MUTEDC};
         margin-top: 10px;
@@ -1327,13 +1330,16 @@ if mode == "Slice STL":
 
     if current is None:
         with st.container(key="stl_dropzone"):
-            stl_file = st.file_uploader("STL file", type=["stl"], key="stl_uploader",
+            stl_file = st.file_uploader("3D model", type=["stl", "3mf"],
+                                        key="stl_uploader",
                                         label_visibility="collapsed")
         if stl_file is not None:
+            _ext = "." + stl_file.name.rsplit(".", 1)[-1].lower()
+            st.session_state.model_ext = _ext if _ext in (".stl", ".3mf") else ".stl"
             st.session_state.current_model = (
                 "upload", stl_file.name.rsplit(".", 1)[0], stl_file.getvalue())
             st.rerun()
-        if st.button("No STL? Browse the included sample models →",
+        if st.button("No model? Browse the included samples →",
                      type="tertiary", icon=":material/grid_view:"):
             sample_picker()
         model_name = None
@@ -1418,8 +1424,10 @@ if mode == "Slice STL":
     if do_slice and model_name is not None:
         kind, _, payload = st.session_state.current_model
         if kind == "upload":
-            # In-memory upload: stage the stored bytes to a temp file for trimesh.
-            with tempfile.NamedTemporaryFile(suffix=".stl", delete=False) as tmp:
+            # In-memory upload: stage the stored bytes to a temp file for trimesh,
+            # keeping the original extension so .3mf is parsed as 3MF.
+            with tempfile.NamedTemporaryFile(
+                    suffix=st.session_state.get("model_ext", ".stl"), delete=False) as tmp:
                 tmp.write(payload)
                 slice_path = tmp.name
         else:

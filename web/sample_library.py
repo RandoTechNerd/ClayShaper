@@ -40,7 +40,7 @@ def list_sample_stls():
         return []
     out = []
     for fn in sorted(os.listdir(MODEL_DIR)):
-        if not fn.lower().endswith(".stl"):
+        if not fn.lower().endswith((".stl", ".3mf")):
             continue
         name = os.path.splitext(fn)[0].strip()
         out.append((name, _CATEGORIES.get(name, "Classics"),

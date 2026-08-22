@@ -69,7 +69,15 @@ class STLSlicer:
         # the inset one, so the wall always has clay under it.
         for i in range(bottom_layers):
             z_target = self.first_layer_height + i * self.layer_height
-            polys = self._section_polygons(z_target - 0.1)
+            # Sample the MIDDLE of the slab this layer represents, the way a
+            # slicer should. A fixed 0.1 mm below the top meant the first layer
+            # took its outline from 90% of the way up its own slab, so any
+            # model with a curved or tapered bottom (a boat hull, a rounded
+            # foot) printed a flat pad much wider than the real base and looked
+            # squashed. It also drifted with layer height: 75% up a 0.4 mm
+            # layer, 96% up a 2.7 mm one.
+            slab = self.first_layer_height if i == 0 else self.layer_height
+            polys = self._section_polygons(max(z_target - slab / 2.0, 1e-3))
             if not polys:
                 continue
             paths = self._concentric_fill(polys, i, bottom_layers, staggered,
@@ -92,7 +100,7 @@ class STLSlicer:
         prev_poly = None    # previous layer's chosen section, for sanity checks
         vase_rings = []     # collect, then smooth across layers before emitting
         for z_target in np.arange(start_z + self.layer_height, z_max, self.layer_height):
-            polys = self._section_polygons(z_target - 0.1)
+            polys = self._section_polygons(z_target - self.layer_height / 2.0)
             if not polys and vase_mode and vase_rings:
                 # Section failed entirely: repair by repeating the last ring at
                 # this height rather than leaving a missing layer.
