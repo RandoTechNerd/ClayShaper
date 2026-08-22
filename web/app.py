@@ -1403,10 +1403,15 @@ if mode == "Slice STL":
             st.markdown("&nbsp;", unsafe_allow_html=True)
             stagger_off = st.slider("Stagger offset", 0.0, 1.0, 0.5, 0.05, disabled=not staggered,
                                     help="Fraction of a line width each alternating base layer shifts inward.")
-            stagger_fill = st.slider("Inset fill", 1.0, 1.3, 1.1, 0.05, disabled=not staggered,
+            stagger_fill = st.slider("Inset fill", 1.0, 1.3, 1.0, 0.05, disabled=not staggered,
                                      help="Extra clay on the inset base layers so they bond to their "
-                                          "neighbors — fills the gaps that make the base look like an "
-                                          "under-filled Oreo. 1.1–1.15 is usually plenty.")
+                                          "neighbours. 1.0 matches the factory files exactly; raise to "
+                                          "1.1 only if the base looks like an under-filled Oreo.")
+            base_flow_pct = st.slider("Base flow (%)", 50, 120, 100, 5,
+                                      help="Clay laid down on the solid base layers only, walls "
+                                           "untouched. The base is filled at one bead width per pass, "
+                                           "and clay spreads as it settles, so drop this to 80–90% if "
+                                           "the first layers pile up or squeeze out.")
         with sc4:
             st.markdown("**Quality**")
             path_res = st.slider("Path resolution (mm)", 0.3, 5.0, 1.5, 0.1,
@@ -1416,7 +1421,7 @@ if mode == "Slice STL":
     slice_key = (model_name, nozzle, layer_h, int(bottom_layers) if model_name else 0,
                  staggered, stagger_off, vase_mode, path_res, printer_name,
                  first_layer_flow, first_layer_h, continuous, fold_soften, model_scale,
-                 stagger_fill)
+                 stagger_fill, base_flow_pct)
 
     do_slice = st.button("Slice", type="primary", icon=":material/play_arrow:",
                          use_container_width=True, disabled=(model_name is None))
@@ -1442,6 +1447,7 @@ if mode == "Slice STL":
                     path_resolution=path_res, first_layer_flow=first_layer_flow,
                     first_layer_height=first_layer_h, continuous=continuous,
                     fold_softening=fold_soften, scale=model_scale, stagger_fill=stagger_fill,
+                    base_flow=base_flow_pct / 100.0,
                     diagnostics=_diag,
                     source=f'Sliced STL "{model_name}" ({kind}, {model_scale*100:.0f}%) on {printer_name}')
             st.session_state.slice_diag = _diag
@@ -1473,6 +1479,14 @@ if mode == "Slice STL":
         # Partial slice? Say so loudly — a model that stops a third of the way
         # up otherwise looks like a deliberate (and valid) short print.
         _d = st.session_state.get("slice_diag") or {}
+        if _d.get("watertight") is False or _d.get("winding_ok") is False:
+            st.warning(
+                "**This model is not a sealed solid.** It has holes or faces "
+                "pointing the wrong way, so cross sections can come out wrong "
+                "and layers may wander or go missing. It will usually still "
+                "slice, but repairing the mesh (Blender, Meshmixer, netfabb, "
+                "or Microsoft 3D Builder) gives a much more reliable print.",
+                icon=":material/build:")
         if _d.get("failed_heights"):
             _short = _d["model_top_mm"] - _d["sliced_top_mm"] > max(2 * layer_h, 1.0)
             st.warning(

@@ -477,9 +477,18 @@ class STLSlicer:
         # Count parity from the TOP: the last base layer (index bottom_layers-1)
         # must never be inset, because the wall lands on its outermost ring.
         from_top = bottom_layers - 1 - layer_index
-        initial = offset_factor * self.line_width if (staggered and from_top % 2 == 1) else 0.0
+        offset = offset_factor * self.line_width if (staggered and from_top % 2 == 1) else 0.0
         for poly in polygons:
-            d = initial
+            # The OUTERMOST ring always sits on the model outline. Staggering
+            # used to shift the whole layer inward, including this ring, which
+            # on a model that flares outward left the next layer's outer ring
+            # hanging over almost nothing: on a flared cup the top base layer
+            # had 9% of its bead supported, so the rim of the base drooped and
+            # the wall built on it never bonded. The stagger now shifts only
+            # the interior rings, and the neighbouring layer covers the gap
+            # that leaves, which is the whole point of staggering.
+            d = 0.0
+            outermost = True
             while True:
                 buffered = poly.buffer(-d - self.line_width / 2)
                 if buffered.is_empty or buffered.area < self.line_width ** 2:
@@ -488,7 +497,8 @@ class STLSlicer:
                 for g in geoms:
                     paths.append(self._normalize_ring(g.exterior))
                     paths.extend(self._normalize_ring(i) for i in g.interiors)
-                d += step
+                d += step + (offset if outermost else 0.0)
+                outermost = False
         return paths
 
     def _resample(self, ring, resolution):
@@ -517,7 +527,7 @@ class STLSlicer:
 
     # ------------------------------------------------------------------ gcode
     def to_gcode(self, layers, first_layer_flow=1.0, source=None, continuous=True,
-                 stagger_fill=1.0):
+                 stagger_fill=1.0, base_flow=1.0):
         """
         continuous: when True (vase mode), consecutive wall layers are JOINED
         with an extruding move instead of a travel whenever the seam jump is
@@ -564,6 +574,12 @@ class STLSlicer:
             h = self.first_layer_height if li == 0 else self.layer_height
             layer_e = (h * self.line_width / self.filament_area) \
                 * (first_layer_flow if li == 0 else 1.0)
+            if layer["type"] == "bottom":
+                # The solid base is filled at exactly one bead width per
+                # pass, so on a wide footprint it lays down a lot of clay,
+                # and clay spreads under its own weight far more than
+                # plastic. This trims the base only; walls are untouched.
+                layer_e *= base_flow
             if layer.get("inset"):
                 layer_e *= stagger_fill
             g.append(";TYPE:SKIN" if layer["type"] == "bottom" else ";TYPE:WALL-OUTER")
@@ -617,7 +633,8 @@ def slice_stl(stl_path, profile, nozzle=3.0, layer_height=1.0, bottom_layers=3,
               staggered=True, staggered_offset_factor=0.5, vase_mode=True,
               path_resolution=1.5, line_width=None, first_layer_flow=1.0,
               source=None, first_layer_height=None, continuous=True,
-              fold_softening=None, scale=1.0, stagger_fill=1.0, diagnostics=None):
+              fold_softening=None, scale=1.0, stagger_fill=1.0, base_flow=1.0,
+              diagnostics=None):
     """Convenience wrapper: returns (gcode_str, layers) for preview + export.
 
     diagnostics: optional dict, filled with how many heights failed to section
@@ -637,6 +654,15 @@ def slice_stl(stl_path, profile, nozzle=3.0, layer_height=1.0, bottom_layers=3,
         err = getattr(slicer, "_last_section_error", None)
         diagnostics["last_error"] = f"{type(err).__name__}: {err}" if err else None
         diagnostics["model_top_mm"] = float(z_max)
+        # Mesh quality. A model with holes or flipped faces sections
+        # unpredictably, which shows up as missing or wandering layers.
+        try:
+            diagnostics["watertight"] = bool(slicer.mesh.is_watertight)
+            diagnostics["winding_ok"] = bool(slicer.mesh.is_winding_consistent)
+        except Exception:
+            diagnostics["watertight"] = None
+            diagnostics["winding_ok"] = None
         diagnostics["sliced_top_mm"] = float(max((l["z"] for l in layers), default=0.0))
     return slicer.to_gcode(layers, first_layer_flow=first_layer_flow, source=source,
-                           continuous=continuous, stagger_fill=stagger_fill), layers
+                           continuous=continuous, stagger_fill=stagger_fill,
+                           base_flow=base_flow), layers
