@@ -24,11 +24,21 @@ from clay_lib import PRINTER_PROFILES
 
 class STLSlicer:
     def __init__(self, stl_path, profile, nozzle=3.0, layer_height=1.0,
-                 line_width=None, first_layer_height=None, scale=1.0):
+                 line_width=None, first_layer_height=None, scale=1.0,
+                 base_layer_height=None):
         self.profile = profile
         self.nozzle = nozzle
         self.layer_height = layer_height
-        self.first_layer_height = first_layer_height or layer_height
+        # The base and the walls want opposite things. Walls want thin
+        # layers, because a thin layer steps outward less and so keeps more
+        # of each bead sitting on the one below. The base wants thick ones:
+        # a bead is line_width across whatever its height, so at 0.6 mm from
+        # a 3 mm nozzle it is five times wider than it is tall, and the
+        # nozzle face smears it into a sliver instead of laying a round
+        # cord. Keeping the two apart lets the walls go fine without
+        # shaving the base down with them.
+        self.base_layer_height = base_layer_height or layer_height
+        self.first_layer_height = first_layer_height or self.base_layer_height
         self.line_width = line_width if line_width is not None else nozzle
         self.filament_area = math.pi * (profile.get("filament_dia", 1.75) / 2.0) ** 2
 
@@ -47,7 +57,8 @@ class STLSlicer:
 
     # ------------------------------------------------------------------ slice
     def slice(self, bottom_layers=3, staggered=True, staggered_offset_factor=0.5,
-              vase_mode=True, path_resolution=1.5, fold_softening=None):
+              vase_mode=True, path_resolution=1.5, fold_softening=None,
+              measure_support=True):
         # Fold softening also widens the crevice-sealing radius: creases
         # narrower than 2x this are closed at the OUTLINE level, so deep folds
         # become shallow grooves instead of pits some layer must bridge over.
@@ -68,7 +79,7 @@ class STLSlicer:
         # anchored to the TOP base layer: the layer the wall lands on is never
         # the inset one, so the wall always has clay under it.
         for i in range(bottom_layers):
-            z_target = self.first_layer_height + i * self.layer_height
+            z_target = self.first_layer_height + i * self.base_layer_height
             # Sample the MIDDLE of the slab this layer represents, the way a
             # slicer should. A fixed 0.1 mm below the top meant the first layer
             # took its outline from 90% of the way up its own slab, so any
@@ -76,7 +87,7 @@ class STLSlicer:
             # foot) printed a flat pad much wider than the real base and looked
             # squashed. It also drifted with layer height: 75% up a 0.4 mm
             # layer, 96% up a 2.7 mm one.
-            slab = self.first_layer_height if i == 0 else self.layer_height
+            slab = self.first_layer_height if i == 0 else self.base_layer_height
             polys = self._section_polygons(max(z_target - slab / 2.0, 1e-3))
             if not polys:
                 continue
@@ -94,7 +105,7 @@ class STLSlicer:
         # section outline (like Cura), so the printed bead's outer face sits ON
         # the model surface — and exactly on the base's outermost ring, which
         # is inset by the same half line width.
-        start_z = self.first_layer_height + (bottom_layers - 1) * self.layer_height \
+        start_z = self.first_layer_height + (bottom_layers - 1) * self.base_layer_height \
             if bottom_layers > 0 else 0.0
         prev_start = None   # seam anchor: keeps direction + start aligned per layer
         prev_poly = None    # previous layer's chosen section, for sanity checks
@@ -152,26 +163,19 @@ class STLSlicer:
         # line_width across, so a layer that steps outward by half a bead only
         # gets half of itself supported, and the rim droops. A drooping rim is
         # exactly what makes a base or wall look detached.
+        # Every overlay below runs on a fixed 1 um grid. GEOS only guarantees
+        # robust unions and intersections under a fixed precision model; at
+        # full float precision a union of buffered beads can hit "found
+        # non-noded intersection" on perfectly ordinary toolpaths. On desktop
+        # that surfaces as a catchable Python error, but under WebAssembly it
+        # aborts the interpreter outright, and no try/except can catch it —
+        # the whole app freezes with the model half-loaded. Snapping to a grid
+        # stops it happening at all, which is the only fix that works in both
+        # places. 1 um is far finer than any clay bead, so it costs nothing.
         self.min_support_frac = 1.0
         self.min_support_z = None
-        try:
-            from shapely.ops import unary_union
-            half = self.line_width / 2.0
-            prev_clay = None
-            for lay in sorted(layers, key=lambda l: l["z"]):
-                bands = [pp.buffer(half) for pp in lay["paths"]
-                         if pp is not None and len(pp.coords) > 1]
-                if not bands:
-                    continue
-                clay = unary_union(bands)
-                if prev_clay is not None and clay.area > 0:
-                    frac = clay.intersection(prev_clay).area / clay.area
-                    if frac < self.min_support_frac:
-                        self.min_support_frac = float(frac)
-                        self.min_support_z = float(lay["z"])
-                prev_clay = clay
-        except Exception:
-            pass
+        if measure_support:
+            self._measure_support(layers)
 
         # Nothing came out at ANY height: the mesh could not be sectioned at
         # all. Fail loudly — an empty slice otherwise sails through validation
@@ -497,6 +501,46 @@ class STLSlicer:
         self.section_failures = getattr(self, "section_failures", 0) + 1
         return []
 
+    # Grid size for every overlay in _measure_support. See the note in
+    # slice() for why a fixed precision model is mandatory, not an optimisation.
+    _SUPPORT_GRID = 1e-3
+
+    def _measure_support(self, layers):
+        """Record the least-supported layer: the fraction of a layer's bead
+        footprint that lands on clay laid down by the layer below."""
+        try:
+            import shapely
+            union_all = shapely.union_all
+            intersection = shapely.intersection
+            set_precision = shapely.set_precision
+            # grid_size arrived with shapely 2.0. Without it the overlay is
+            # not robust, so skip the measurement rather than risk the abort.
+            union_all([], grid_size=self._SUPPORT_GRID)
+        except Exception:
+            return
+
+        g = self._SUPPORT_GRID
+        half = self.line_width / 2.0
+        prev_clay = None
+        for lay in sorted(layers, key=lambda l: l["z"]):
+            bands = []
+            for pp in lay["paths"]:
+                if pp is None or len(pp.coords) < 2:
+                    continue
+                try:
+                    bands.append(set_precision(pp.buffer(half), g))
+                except Exception:
+                    continue
+            if not bands:
+                continue
+            clay = union_all(bands, grid_size=g)
+            if prev_clay is not None and clay.area > 0:
+                frac = intersection(clay, prev_clay, grid_size=g).area / clay.area
+                if frac < self.min_support_frac:
+                    self.min_support_frac = float(frac)
+                    self.min_support_z = float(lay["z"])
+            prev_clay = clay
+
     def _concentric_fill(self, polygons, layer_index, bottom_layers, staggered,
                          offset_factor):
         paths = []
@@ -554,7 +598,7 @@ class STLSlicer:
 
     # ------------------------------------------------------------------ gcode
     def to_gcode(self, layers, first_layer_flow=1.0, source=None, continuous=True,
-                 stagger_fill=1.0, base_flow=1.0):
+                 stagger_fill=1.0, base_flow=1.0, staggered=None):
         """
         continuous: when True (vase mode), consecutive wall layers are JOINED
         with an extruding move instead of a travel whenever the seam jump is
@@ -583,7 +627,18 @@ class STLSlicer:
             g.append(f";SOURCE: {source}")
         if first_layer_flow != 1.0:
             g.append(f";First layer flow: {first_layer_flow*100:.0f}%")
-        g += [f";Layer height: {self.layer_height:g}", f";Line width: {self.line_width:g}"]
+        g += [f";Layer height: {self.layer_height:g}"]
+        if abs(self.base_layer_height - self.layer_height) > 1e-9:
+            g.append(f";Base layer height: {self.base_layer_height:g}")
+        g.append(f";Line width: {self.line_width:g}")
+        # Record the stagger setting. A validator cannot reliably infer it
+        # from the toolpath: it has to compare ring radii, and on a base
+        # that is not round those vary more within one ring than the
+        # stagger shifts them between layers. Reading it back beats
+        # guessing, and telling someone to switch on what is already on is
+        # worse than saying nothing.
+        if staggered is not None:
+            g.append(f";Staggered base: {1 if staggered else 0}")
         if xs:
             g += [f";MINX:{min(xs):.2f}", f";MINY:{min(ys):.2f}", f";MINZ:{min(zs):.2f}",
                   f";MAXX:{max(xs):.2f}", f";MAXY:{max(ys):.2f}", f";MAXZ:{max(zs):.2f}"]
@@ -598,7 +653,12 @@ class STLSlicer:
             g.append(f";LAYER:{li}")
             z = layer["z"]
             is_vase = layer["type"] == "vase"
-            h = self.first_layer_height if li == 0 else self.layer_height
+            if li == 0:
+                h = self.first_layer_height
+            elif layer["type"] == "bottom":
+                h = self.base_layer_height
+            else:
+                h = self.layer_height
             layer_e = (h * self.line_width / self.filament_area) \
                 * (first_layer_flow if li == 0 else 1.0)
             if layer["type"] == "bottom":
@@ -661,7 +721,7 @@ def slice_stl(stl_path, profile, nozzle=3.0, layer_height=1.0, bottom_layers=3,
               path_resolution=1.5, line_width=None, first_layer_flow=1.0,
               source=None, first_layer_height=None, continuous=True,
               fold_softening=None, scale=1.0, stagger_fill=1.0, base_flow=1.0,
-              diagnostics=None):
+              base_layer_height=None, diagnostics=None):
     """Convenience wrapper: returns (gcode_str, layers) for preview + export.
 
     diagnostics: optional dict, filled with how many heights failed to section
@@ -670,7 +730,7 @@ def slice_stl(stl_path, profile, nozzle=3.0, layer_height=1.0, bottom_layers=3,
     """
     slicer = STLSlicer(stl_path, profile, nozzle=nozzle, layer_height=layer_height,
                        line_width=line_width, first_layer_height=first_layer_height,
-                       scale=scale)
+                       scale=scale, base_layer_height=base_layer_height)
     layers = slicer.slice(bottom_layers, staggered, staggered_offset_factor,
                           vase_mode, path_resolution, fold_softening=fold_softening)
     if diagnostics is not None:
@@ -694,4 +754,4 @@ def slice_stl(stl_path, profile, nozzle=3.0, layer_height=1.0, bottom_layers=3,
         diagnostics["sliced_top_mm"] = float(max((l["z"] for l in layers), default=0.0))
     return slicer.to_gcode(layers, first_layer_flow=first_layer_flow, source=source,
                            continuous=continuous, stagger_fill=stagger_fill,
-                           base_flow=base_flow), layers
+                           base_flow=base_flow, staggered=staggered), layers

@@ -171,7 +171,13 @@ def extract_toolpath(text, max_points=36000):
     return out
 
 
-def _analyze_geometry(segments, bed_x, bed_y, line_width=3.0):
+_BASE_SEAM_MSG = (
+    "Base rings stack directly on each other (no stagger). Offsetting "
+    "alternate base layers half a line width spreads the seams and makes "
+    "a stronger, more watertight bottom — enable “Staggered base” when slicing.")
+
+
+def _analyze_geometry(segments, bed_x, bed_y, line_width=3.0, staggered=None):
     """
     Clay-specific geometric checks on the extrusion segments.
 
@@ -404,6 +410,17 @@ def _analyze_geometry(segments, bed_x, bed_y, line_width=3.0):
 
     # --- 3. Stacked base rings (stagger off) ---------------------------------
     skin_ids = [li for li in layer_ids if any(s[4] for s in layers[li])]
+    if staggered is not None:
+        # The file states the setting outright, so use it and skip the
+        # heuristic below, which only reads true on a round base: it
+        # compares ring radii between layers, and on an irregular
+        # footprint the radius varies more within a single ring than the
+        # stagger moves it between layers. That misreads both ways — it
+        # told people to switch on a stagger that was already on, and
+        # stayed quiet on flared models where it was genuinely off.
+        if not staggered and len(skin_ids) >= 2:
+            issues.append(Issue(SUGGEST, "Base seams", _BASE_SEAM_MSG))
+        skin_ids = []
     if len(skin_ids) >= 2:
         maxr = {}
         for li in skin_ids:
@@ -427,10 +444,7 @@ def _analyze_geometry(segments, bed_x, bed_y, line_width=3.0):
         pairs = list(zip(skin_ids, skin_ids[1:]))
         stacked = sum(1 for a, b in pairs if abs(maxr[a] - maxr[b]) < stack_tol)
         if pairs and stacked == len(pairs):
-            issues.append(Issue(SUGGEST, "Base seams",
-                "Base rings stack directly on each other (no stagger). Offsetting "
-                "alternate base layers half a line width spreads the seams and makes "
-                "a stronger, more watertight bottom — enable “Staggered base” when slicing."))
+            issues.append(Issue(SUGGEST, "Base seams", _BASE_SEAM_MSG))
     return issues
 
 
@@ -632,6 +646,19 @@ def validate_gcode(text, profile, nozzle=None, layer_height=None,
         # Expected flow, if we know nozzle + layer height.
         if nozzle and layer_height:
             expected = (layer_height * nozzle) / filament_area
+            # The solid base may deliberately print thicker than the walls:
+            # thin layers help walls hold overhangs but starve the base. Those
+            # layers really do lay more clay per mm, and on a wide footprint
+            # they are easily a tenth of the whole path, so without this the
+            # sustained-flow check reads the base as over-extrusion. The
+            # slicer writes the base height into the header when it differs.
+            _bm = re.search(r";Base layer height:\s*([0-9.]+)", text)
+            hot = expected
+            if _bm:
+                try:
+                    hot = max(expected, (float(_bm.group(1)) * nozzle) / filament_area)
+                except ValueError:
+                    pass
             if expected > 0:
                 ratio = median_epm / expected
                 if ratio > 1.6 or ratio < 0.55:
@@ -643,16 +670,19 @@ def validate_gcode(text, profile, nozzle=None, layer_height=None,
                     # Sustained (not just spiky) over-extrusion: the top decile
                     # running hot means whole regions lay down too much clay.
                     p90 = vals[int(len(vals) * 0.9)]
-                    if p90 > expected * 1.5:
+                    if p90 > hot * 1.5:
                         issues.append(Issue(WARN, "Flow",
                             f"10% of the path extrudes at {p90:.2f} E/mm — over 1.5x "
-                            f"the expected {expected:.2f}. Sustained over-extrusion "
+                            f"the expected {hot:.2f}. Sustained over-extrusion "
                             f"blobs and drags in clay; check first-layer/flow settings."))
 
     # --- 5b. Geometry: support ("thin air"), solid areas, stagger -------------
     try:
         lw = nozzle if nozzle else 3.0
-        issues.extend(_analyze_geometry(segments, bed_x, bed_y, line_width=lw))
+        _sm = re.search(r";Staggered base:\s*([01])", text)
+        issues.extend(_analyze_geometry(
+            segments, bed_x, bed_y, line_width=lw,
+            staggered=(_sm.group(1) == "1") if _sm else None))
     except Exception:
         pass   # geometry analysis is best-effort; never block validation on it
 

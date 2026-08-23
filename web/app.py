@@ -952,7 +952,8 @@ with st.sidebar:
     _lh_max = round(nozzle * 0.9, 2)
     if "s_lh" in st.session_state:
         st.session_state.s_lh = min(max(st.session_state.s_lh, 0.2), _lh_max)
-    _flh_max = round(max(st.session_state.get("s_lh", min(1.0, round(nozzle * 0.5, 2))) * 1.5, 0.6), 2)
+    _flh_max = round(max(st.session_state.get(
+        "s_blh", min(1.0, round(nozzle * 0.5, 2))) * 1.5, 0.6), 2)
     if "s_flh" in st.session_state:
         st.session_state.s_flh = min(max(st.session_state.s_flh, 0.3), _flh_max)
     if "s_flf" in st.session_state:
@@ -996,9 +997,24 @@ with st.sidebar:
         help="Eazao spec: 0.4–1.0 mm. Default 0.6 mm holds overhangs far better; 1.0 mm matches the factory profile and prints faster on straight-walled shapes.",
     )
 
-    st.session_state.setdefault("s_flh", layer_h)
+    # The base keeps the factory height even when the walls go finer. A bead
+    # is line_width across whatever height you print it at, so a 0.6 mm layer
+    # from a 3 mm nozzle is five times wider than it is tall: the nozzle face
+    # smears it into a sliver rather than laying a round cord, and the base
+    # comes out thin and papery. Walls have the opposite problem, which is
+    # why the two are separate.
+    _base_lh_default = min(1.0, round(nozzle * 0.5, 2))
+    st.session_state.setdefault("s_blh", min(_base_lh_default, _lh_max))
+    if "s_blh" in st.session_state:
+        st.session_state.s_blh = min(max(st.session_state.s_blh, 0.2), _lh_max)
+    base_layer_h = st.slider(
+        "Base layer height (mm)", 0.2, _lh_max, key="s_blh",
+        help="Height of the solid base layers, kept separate from the walls. Thin layers help the walls hold overhangs but starve the base, which then prints as thin slivers instead of solid cords. Leave this at the factory height unless the base is piling up.",
+    )
+
+    st.session_state.setdefault("s_flh", base_layer_h)
     first_layer_h = st.slider(
-        "First layer height (mm)", 0.3, round(max(layer_h * 1.5, 0.6), 2), step=0.05,
+        "First layer height (mm)", 0.3, round(max(base_layer_h * 1.5, 0.6), 2), step=0.05,
         key="s_flh",
         help="Height of layer 1 only. Lower squishes the first coil into the bed "
              "for grip; the extrusion volume adjusts automatically.",
@@ -1426,7 +1442,7 @@ if mode == "Slice STL":
     slice_key = (model_name, nozzle, layer_h, int(bottom_layers) if model_name else 0,
                  staggered, stagger_off, vase_mode, path_res, printer_name,
                  first_layer_flow, first_layer_h, continuous, fold_soften, model_scale,
-                 stagger_fill, base_flow_pct)
+                 stagger_fill, base_flow_pct, base_layer_h)
 
     do_slice = st.button("Slice", type="primary", icon=":material/play_arrow:",
                          use_container_width=True, disabled=(model_name is None))
@@ -1453,6 +1469,7 @@ if mode == "Slice STL":
                     first_layer_height=first_layer_h, continuous=continuous,
                     fold_softening=fold_soften, scale=model_scale, stagger_fill=stagger_fill,
                     base_flow=base_flow_pct / 100.0,
+                    base_layer_height=base_layer_h,
                     diagnostics=_diag,
                     source=f'Sliced STL "{model_name}" ({kind}, {model_scale*100:.0f}%) on {printer_name}')
             st.session_state.slice_diag = _diag

@@ -70,8 +70,11 @@ def _render_sliced_thumbnail(stl_path, size=360):
 
     profile = PRINTER_PROFILES["Eazao Potter"]
     slicer = STLSlicer(stl_path, profile, nozzle=3.0, layer_height=2.0)
+    # measure_support=False: the thumbnail only needs the toolpath, and this
+    # runs on the upload rerun, long before anyone presses Slice. Nothing that
+    # is merely decorative should be doing heavy geometry on that path.
     layers = slicer.slice(bottom_layers=2, staggered=True, vase_mode=False,
-                          path_resolution=3.0)
+                          path_resolution=3.0, measure_support=False)
     if not layers:
         return None
     base = [l for l in layers if l["type"] == "bottom"]
