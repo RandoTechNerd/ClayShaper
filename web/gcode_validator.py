@@ -413,7 +413,14 @@ def _analyze_geometry(segments, bed_x, bed_y, line_width=3.0):
                     pts_all.append((x0, y0)); pts_all.append((x1, y1))
             p = np.asarray(pts_all)
             c = p.mean(axis=0)
-            maxr[li] = float(np.hypot(p[:, 0] - c[0], p[:, 1] - c[1]).max())
+            r_all = np.hypot(p[:, 0] - c[0], p[:, 1] - c[1])
+            # Judge the stagger on the FIRST INTERIOR ring, not the outermost.
+            # The outer ring deliberately follows the model on every base layer
+            # (staggering it would leave the next layer's rim unsupported), so
+            # comparing outer radii now reports "no stagger" even when it is on.
+            r_max = float(r_all.max())
+            inner = r_all[r_all < r_max - 0.6 * line_width]
+            maxr[li] = float(inner.max()) if inner.size else r_max
         # "Stacked" = ring shift much smaller than a stagger step (half a line
         # width); natural flare of a sloped wall is ~0.3-0.5mm and still counts.
         stack_tol = 0.35 * line_width

@@ -985,10 +985,15 @@ with st.sidebar:
     # param — passing both makes Streamlit warn ("created with a default value
     # but also had its value set via the Session State API") because the typed-
     # entry Apply button also writes these keys.
-    st.session_state.setdefault("s_lh", min(1.0, round(nozzle * 0.5, 2)))
+    # 0.6 mm rather than the factory 1.0: on anything that flares outward,
+    # each layer steps out proportionally to the layer height, so 1.0 mm
+    # leaves the outer bead barely supported and the wall sags away from
+    # the layer below. 0.6 roughly doubles how much of each bead lands on
+    # clay. Raise it to 1.0 for straight-walled shapes to print faster.
+    st.session_state.setdefault("s_lh", min(0.6, _lh_max))
     layer_h = st.slider(
         "Layer Height (mm)", 0.2, _lh_max, key="s_lh",
-        help="Eazao spec: 0.4–1.0 mm. Factory vase profile uses 1.0 mm.",
+        help="Eazao spec: 0.4–1.0 mm. Default 0.6 mm holds overhangs far better; 1.0 mm matches the factory profile and prints faster on straight-walled shapes.",
     )
 
     st.session_state.setdefault("s_flh", layer_h)
