@@ -1487,6 +1487,23 @@ if mode == "Slice STL":
                 "slice, but repairing the mesh (Blender, Meshmixer, netfabb, "
                 "or Microsoft 3D Builder) gives a much more reliable print.",
                 icon=":material/build:")
+        _sup = _d.get("min_support")
+        if _sup is not None and _sup < 0.65:
+            _z = _d.get("min_support_z")
+            _where = f" (worst around {_z:.0f} mm up)" if _z else ""
+            st.warning(
+                f"**Overhang: only {_sup*100:.0f}% of one layer lands on the clay "
+                f"below**{_where}. Clay has no support under the rest, so it can "
+                "sag or peel away from the layer under it. Below about half a "
+                "bead it usually droops. "
+                f"Each layer steps outward about "
+                f"{(1 - _sup) * nozzle:.1f} mm, and the bead is only {nozzle:g} mm "
+                f"wide. Dropping the Layer Height to about "
+                f"**{max(0.2, round(layer_h * 0.3 / max(1 - _sup, 0.01), 1)):.1f} mm** "
+                "would put roughly 70% of each layer on solid clay. Fold "
+                "softening helps on draped shapes, and stiffer clay printed "
+                "slower buys a little more.",
+                icon=":material/stacked_line_chart:")
         if _d.get("failed_heights"):
             _short = _d["model_top_mm"] - _d["sliced_top_mm"] > max(2 * layer_h, 1.0)
             st.warning(

@@ -146,6 +146,33 @@ class STLSlicer:
                                                       max_step=fold_softening):
                 layers.append({"z": z_target, "paths": [ls], "type": "vase"})
 
+        # --- Overhang safety -------------------------------------------------
+        # Clay cannot bridge air. For each layer, work out how much of the bead
+        # it actually lays down lands on clay from the layer below. A bead is
+        # line_width across, so a layer that steps outward by half a bead only
+        # gets half of itself supported, and the rim droops. A drooping rim is
+        # exactly what makes a base or wall look detached.
+        self.min_support_frac = 1.0
+        self.min_support_z = None
+        try:
+            from shapely.ops import unary_union
+            half = self.line_width / 2.0
+            prev_clay = None
+            for lay in sorted(layers, key=lambda l: l["z"]):
+                bands = [pp.buffer(half) for pp in lay["paths"]
+                         if pp is not None and len(pp.coords) > 1]
+                if not bands:
+                    continue
+                clay = unary_union(bands)
+                if prev_clay is not None and clay.area > 0:
+                    frac = clay.intersection(prev_clay).area / clay.area
+                    if frac < self.min_support_frac:
+                        self.min_support_frac = float(frac)
+                        self.min_support_z = float(lay["z"])
+                prev_clay = clay
+        except Exception:
+            pass
+
         # Nothing came out at ANY height: the mesh could not be sectioned at
         # all. Fail loudly — an empty slice otherwise sails through validation
         # as a clean "PASS" with zero layers, which tells the user nothing.
@@ -654,6 +681,8 @@ def slice_stl(stl_path, profile, nozzle=3.0, layer_height=1.0, bottom_layers=3,
         err = getattr(slicer, "_last_section_error", None)
         diagnostics["last_error"] = f"{type(err).__name__}: {err}" if err else None
         diagnostics["model_top_mm"] = float(z_max)
+        diagnostics["min_support"] = float(getattr(slicer, "min_support_frac", 1.0))
+        diagnostics["min_support_z"] = getattr(slicer, "min_support_z", None)
         # Mesh quality. A model with holes or flipped faces sections
         # unpredictably, which shows up as missing or wandering layers.
         try:
