@@ -58,7 +58,7 @@ class STLSlicer:
     # ------------------------------------------------------------------ slice
     def slice(self, bottom_layers=3, staggered=True, staggered_offset_factor=0.5,
               vase_mode=True, path_resolution=1.5, fold_softening=None,
-              measure_support=True):
+              measure_support=True, spiral=True):
         # Fold softening also widens the crevice-sealing radius: creases
         # narrower than 2x this are closed at the OUTLINE level, so deep folds
         # become shallow grooves instead of pits some layer must bridge over.
@@ -153,8 +153,11 @@ class STLSlicer:
         # can't flip-flop in and out of folds — that alternation left stepped
         # pockets of exposed coil ends on fold cheeks.
         if vase_mode and vase_rings:
-            for z_target, ls in self._smooth_contours(vase_rings, path_resolution,
-                                                      max_step=fold_softening):
+            rings = list(self._smooth_contours(vase_rings, path_resolution,
+                                              max_step=fold_softening))
+            if spiral:
+                rings = self._spiralize(rings)
+            for z_target, ls in rings:
                 layers.append({"z": z_target, "paths": [ls], "type": "vase"})
 
         # --- Overhang safety -------------------------------------------------
@@ -278,6 +281,55 @@ class STLSlicer:
         for i, (z, _) in enumerate(vase_rings):
             closed = np.vstack([S[i], S[i][:1]])
             out.append((z, LineString(closed)))
+        return out
+
+    @staticmethod
+    def _spiralize(rings):
+        """Turn stacked rings into one true helix.
+
+        Vase mode already ramps Z across each ring, but every ring holds its
+        own layer's shape for the whole turn and then swaps to the next one
+        where it wraps. That swap is a step in the wall, and because the seam
+        is anchored to the same angle on every layer, all of those steps line
+        up into a single vertical scar.
+
+        Blending fixes it at the source: point j of a layer is walked from
+        this ring toward the next one in step with how far round the turn it
+        is, so the radius changes smoothly the whole way instead of all at
+        once. The end of a layer then lands exactly on the start of the next
+        (t reaches 1 at the closing point), leaving nothing to seam.
+
+        The turn that lands on the base is left alone. Walking it outward
+        straight away puts noticeably more of that first bead out past the
+        base rim, and that joint is the one that gives clay trouble in the
+        first place. One small step at the foot, sitting on solid base, beats
+        one up the whole wall.
+
+        _smooth_contours has already resampled every ring to the same point
+        count by fractional arc length, so index j means the same place on
+        each ring; the guard below just refuses to blend anything that is not.
+        """
+        from nearest import NearestPoints as cKDTree
+
+        out = []
+        for i, (z, ls) in enumerate(rings):
+            pts = np.asarray(ls.coords)
+            if i > 0 and i + 1 < len(rings) and len(pts) > 2:
+                nxt = np.asarray(rings[i + 1][1].coords)
+                # Walk each point toward the CLOSEST point on the next ring,
+                # not the one with the same index. Matching by index assumes
+                # both rings were cut at the same place and run at the same
+                # pace, and on a crumpled surface they do not: on the Paper
+                # Bag Vase the same-index point is 4.5 mm away while the real
+                # nearest one is 0.17 mm, so an index blend drags the wall
+                # sideways instead of easing it outward. This is the same
+                # correspondence _smooth_contours uses, for the same reason.
+                _, idx = cKDTree(nxt[:-1]).query(pts)
+                idx = np.asarray(idx)
+                idx[-1] = 0          # land exactly where the next turn starts
+                t = np.linspace(0.0, 1.0, len(pts))[:, None]
+                pts = pts * (1.0 - t) + nxt[idx] * t
+            out.append((z, LineString(pts)))
         return out
 
     def _clean_inset(self, poly):
@@ -732,7 +784,8 @@ def slice_stl(stl_path, profile, nozzle=3.0, layer_height=1.0, bottom_layers=3,
                        line_width=line_width, first_layer_height=first_layer_height,
                        scale=scale, base_layer_height=base_layer_height)
     layers = slicer.slice(bottom_layers, staggered, staggered_offset_factor,
-                          vase_mode, path_resolution, fold_softening=fold_softening)
+                          vase_mode, path_resolution, fold_softening=fold_softening,
+                          spiral=continuous)
     if diagnostics is not None:
         z_max = slicer.mesh.bounds[1][2]
         diagnostics["failed_heights"] = getattr(slicer, "section_failures", 0)
