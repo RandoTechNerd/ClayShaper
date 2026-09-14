@@ -478,7 +478,11 @@ def validate_gcode(text, profile, nozzle=None, layer_height=None,
         issues.append(Issue(FAIL, "Clay safety",
             "Missing M302 (cold-extrusion enable). The machine has no heater and "
             "will refuse to extrude without it."))
-    if not have["M163"] or not have["M164"]:
+    # Mixing-ratio codes only matter on a mixing hotend (Eazao). A profile whose
+    # own start block never sends them (Tronxy, generic Marlin) must not be
+    # told they are missing.
+    needs_mix = "M163" in (profile.get("start_gcode") or "M163")
+    if needs_mix and (not have["M163"] or not have["M164"]):
         issues.append(Issue(WARN, "Clay safety",
             "Missing M163/M164 mixing-ratio commands. Eazao's dual-material hotend "
             "expects them; extrusion may be wrong or blocked."))

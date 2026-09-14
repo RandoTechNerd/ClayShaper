@@ -38,7 +38,11 @@ Check your file before you print
    speeds outside your machine limits, missing clay start codes, and how
    much clay you will use in grams.
 
-Set up for the Eazao Potter (165 x 165 x 280 mm). You can add your own
+Set up for the Eazao Potter (165 x 165 x 280 mm). Two BETA test profiles for
+the Tronxy Moore 2 Pro (255 x 255 x 260 mm) are in the printer list; they
+differ only in how much clay one E unit means (Test A matches the Tronxy
+Cura profile, Test B matches Eazao). Try A first, and if the flow is far
+off try B, then tell us which one printed right. You can also add your own
 printer from the sidebar.
 
 PREFER NO DOWNLOAD?

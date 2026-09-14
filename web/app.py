@@ -29,7 +29,7 @@ from stl_slicer import slice_stl
 from sample_library import list_sample_stls, list_sample_gcodes, get_thumbnail, get_thumbnail_b64
 from preview3d import split_gapped, toolpath_figure, bead_mesh_arrays, partial_bead_mesh
 import brand
-from brand import PRINTER_CATALOG, printer_icon, wordmark_svg, ui_icon, THEMES
+from brand import PRINTER_CATALOG, PRINTER_BETA, printer_icon, wordmark_svg, ui_icon, THEMES
 import tempfile
 import os
 import re
@@ -861,7 +861,8 @@ def printer_dropdown_html():
                 f'<span class="ez-ic">{printer_icon(name, active=True)}</span>'
                 f'<span><div class="ez-dd-name">{name}</div>'
                 f'<div class="ez-dd-sub">{tagline}</div></span>'
-                + ('<span class="ez-chip sel">SELECTED</span>' if sel else '')
+                + ('<span class="ez-chip sel">SELECTED</span>' if sel
+                   else ('<span class="ez-chip soon">BETA</span>' if name in PRINTER_BETA else ''))
                 + '</div>'
             )
         else:
@@ -922,7 +923,9 @@ with st.sidebar:
                  use_container_width=True, key="add_printer_btn"):
         st.session_state.show_add_printer = True
         st.rerun()
-    if st.session_state.custom_printers:
+    # Native picker whenever there is more than one selectable profile
+    # (built-in test profiles count, not only user-added printers).
+    if len(ALL_PROFILES) > 1:
         _opts = list(ALL_PROFILES.keys())
         _pick = st.selectbox("Active printer", _opts,
                              index=_opts.index(printer_name) if printer_name in _opts else 0,
@@ -941,7 +944,13 @@ with st.sidebar:
 
     with c_noz_sel:
         nozzle_options = profile["nozzles"]
-        _default_noz = nozzle_options.index(3.0) if 3.0 in nozzle_options else 0
+        _pref_noz = profile.get("default_nozzle", 3.0)
+        _default_noz = nozzle_options.index(_pref_noz) if _pref_noz in nozzle_options else 0
+        # Switching printers can leave a nozzle in state that this machine
+        # does not have (3.0 from the Potter, say); Streamlit rejects a stored
+        # value that is not an option, so fall back to the machine default.
+        if st.session_state.get("s_noz") not in nozzle_options:
+            st.session_state.pop("s_noz", None)
         nozzle = st.selectbox(
             "Nozzle / line width (mm)", nozzle_options,
             index=_default_noz, key="s_noz",

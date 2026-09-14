@@ -134,12 +134,35 @@ def _tong_svg(stroke):
 
 
 # name -> (svg_fn, tagline, active)
+def _tronxy_svg(stroke):
+    # Cartesian gantry: two uprights, a crossbar with the screw head hanging
+    # from it, a bed that moves in Y (drawn with a little arrow).
+    return f"""
+<svg viewBox="0 0 90 80" xmlns="http://www.w3.org/2000/svg" fill="none"
+     stroke="{stroke}" stroke-width="3" stroke-linecap="round" stroke-linejoin="round">
+  <path d="M14 66 V14 H76 V66"/>
+  <path d="M14 24 H76"/>
+  <rect x="38" y="18" width="14" height="18" rx="2"/>
+  <path d="M45 36 V44"/>
+  <circle cx="45" cy="47" r="2.5" fill="{stroke}" stroke="none"/>
+  <path d="M20 60 H70 L66 54 H24 Z"/>
+  <path d="M6 66 H84"/>
+  <path d="M26 72 H64 M60 69 L64 72 L60 75"/>
+</svg>"""
+
+
 PRINTER_CATALOG = [
     ("Eazao Potter", _potter_svg, "Desktop clay · 165×165×280", True),
+    ("Tronxy Moore 2 Pro (Test A)", _tronxy_svg, "255×255×260 · E-scale 3.0 mm (Tronxy Cura)", True),
+    ("Tronxy Moore 2 Pro (Test B)", _tronxy_svg, "255×255×260 · E-scale 1.75 mm (Eazao-style)", True),
     ("Eazao Zero",   _zero_svg,   "Compact clay", False),
     ("Matrix M500",  _matrix_svg, "Enclosed multi-material", False),
     ("Tong A1000",   _tong_svg,   "Large-format concrete", False),
 ]
+
+
+# Catalog printers that are selectable but still being tuned with owners.
+PRINTER_BETA = {"Tronxy Moore 2 Pro (Test A)", "Tronxy Moore 2 Pro (Test B)"}
 
 
 def printer_icon(name, active=True, stroke=None):

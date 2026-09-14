@@ -74,8 +74,12 @@ into thin air, over extrusion, speeds outside your machine's limits, missing
 clay start codes, and how much clay you will actually use in grams. You get one
 of four clear answers: pass, pass with tips, caution, or fail.
 
-Tuned for the **Eazao Potter** (165 x 165 x 280 mm). You can add your own
-printer from the sidebar.
+Tuned for the **Eazao Potter** (165 x 165 x 280 mm). The **Tronxy Moore 2 Pro**
+(255 x 255 x 260 mm) has two BETA test profiles in the printer list: Test A
+uses the 3.0 mm E-scale of the Tronxy Cura profile, Test B the 1.75 mm scale
+Eazao uses, and nothing else differs. Try A first and report back which one
+lays down the right amount of clay. You can add your own printer from the
+sidebar.
 
 <br>
 

@@ -527,6 +527,78 @@ PRINTER_PROFILES = {
     },
 }
 
+# -----------------------------------------------------------------------------
+# Tronxy Moore 2 Pro (BETA test profiles)
+# -----------------------------------------------------------------------------
+# Cartesian clay printer, moving Y bed, dual-motor clay system (electric push-rod
+# feeder + screw print head), stock Marlin on a 32-bit board, 24 V. Facts from the
+# owner + tronxy3d.com spec sheet: bed 255x255, Z 260, layer 0.3-3.0 mm, speed
+# 10-40 mm/s ("20 mm/s is preferred"), 500 ml barrel, Cura is the stock slicer.
+#
+# THE ONE THING WE CANNOT KNOW FROM A SPEC SHEET: how many E units make a mm3
+# of clay. E in G-code is "mm of filament", so a slicer converts bead volume to E
+# through a virtual filament diameter, and the printer's E-steps were calibrated
+# against whatever diameter the factory Cura profile uses. Eazao uses 1.75 mm;
+# the Moore 2 Pro owner reports their Cura profile says 3.0 mm. Same bead through
+# a 3.0 mm "filament" needs (1.75/3.0)^2 = 0.34x the E of a 1.75 mm one, so
+# guessing wrong is a 2.9x flow error in one direction or the other.
+# Hence TWO profiles that differ ONLY in that number, for a side-by-side test:
+#   Test A: E-scale 3.0 mm  (matches the Tronxy Cura profile, our best guess)
+#   Test B: E-scale 1.75 mm (Eazao / ClayShaper default)
+# Everything else is a minimal, stock-Marlin clay start-up. Plain "M302" with no
+# argument only REPORTS cold-extrusion status on stock Marlin, so we send
+# "M302 P1" (Eazao's fork accepts the bare form, which is why the Eazao block
+# differs). No M105/M109 (this board has no heater) and no M163/M164 (single
+# screw motor, not a mixing hotend).
+
+def _tronxy_start(variant, e_scale):
+    return f""";ClayShaper Tronxy Moore 2 Pro profile: Test {variant} (E-scale {e_scale:g} mm)
+M302 P1 ;allow cold extrusion (clay, no heater)
+G21 ;millimetres
+G90 ;absolute positioning
+M82 ;absolute extrusion
+G28 ;home all axes
+G92 E0
+G1 Z15 F600 ;lift the nozzle clear of the bed
+G1 E3 F300 ;small prime so clay is at the nozzle tip
+G92 E0"""
+
+
+TRONXY_END_GCODE = """M107
+G92 E0
+G1 E-3 F300 ;back the screw off to relieve pressure
+G91 ;relative moves
+G1 Z10 F600 ;lift 10 mm off the print
+G90 ;back to absolute
+M84 ;steppers off
+;End of Gcode"""
+
+
+def _tronxy_moore2pro(variant, e_scale):
+    return {
+        "bed_x": 255.0, "bed_y": 255.0, "max_z": 260.0,
+        "center_x": 127.5, "center_y": 127.5,
+        "print_speed": 1200,      # 20 mm/s: Tronxy's own "preferred" speed
+        "z_speed": 300,
+        "min_print_speed": 600,   # 10 mm/s
+        "max_print_speed": 2400,  # 40 mm/s
+        "max_feedrate": 3600,
+        "layer_range": (0.3, 3.0),
+        "cartridge_ml": 500.0,
+        "filament_dia": e_scale,
+        "nozzles": [1.4, 1.6, 1.9, 2.2],
+        "default_nozzle": 2.2,    # largest = most forgiving for a first clay test
+        "start_gcode": _tronxy_start(variant, e_scale),
+        "end_gcode": TRONXY_END_GCODE,
+        "beta": True,
+        "notes": f"Test {variant}: E-scale {e_scale:g} mm. Cartesian, moving Y bed, "
+                 "push-rod feeder + screw head, Marlin, 24 V.",
+    }
+
+
+PRINTER_PROFILES["Tronxy Moore 2 Pro (Test A)"] = _tronxy_moore2pro("A", 3.0)
+PRINTER_PROFILES["Tronxy Moore 2 Pro (Test B)"] = _tronxy_moore2pro("B", 1.75)
+
 
 def generate_gcode(clay_obj, offset_x=0.0, offset_y=0.0, profile=None, line_width=None,
                    first_layer_flow=1.0, source=None):
