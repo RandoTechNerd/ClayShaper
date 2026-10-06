@@ -16,14 +16,16 @@ it: github.com/RandoTechNerd/ClayShaper
 
 THE FIRST LAUNCH
 ----------------
-The first time you open ClayShaper it takes about 20 to 30 seconds and needs
-internet, while it sets itself up. Every launch after that opens in a couple
-of seconds and works offline. Your models never leave your computer.
+The first time you open ClayShaper it takes about 20 to 30 seconds while it
+sets itself up. Launches after that open in a couple of seconds. For now it
+still needs an internet connection each time it starts (it checks for its
+Python packages online); starting fully offline is planned for a later
+update. Your models never leave your computer.
 
 WHAT YOU CAN DO
 ---------------
 Slice a 3D model
-   Load your own STL, or start from one of the five included samples, and
+   Load your own STL, or start from one of the six included samples, and
    get a clay toolpath. Vase mode prints the wall as one unbroken spiral.
    The staggered base grips instead of peeling. Fold softening helps
    crumpled shapes print.
@@ -43,7 +45,8 @@ the Tronxy Moore 2 Pro (255 x 255 x 260 mm) are in the printer list; they
 differ only in how much clay one E unit means (Test A matches the Tronxy
 Cura profile, Test B matches Eazao). Try A first, and if the flow is far
 off try B, then tell us which one printed right. You can also add your own
-printer from the sidebar.
+printer from the sidebar; for now it is kept only until the app is closed or
+the page reloaded.
 
 PREFER NO DOWNLOAD?
 -------------------

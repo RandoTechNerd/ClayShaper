@@ -3,7 +3,21 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>ClayShaper</title>
+    <title>ClayShaper — Ceramic Slicer for Clay 3D Printers</title>
+    <meta name="description" content="Slice STLs, design pottery, and export G-code for clay 3D printers — a free, browser-based ceramic slicer." />
+    <link rel="canonical" href="https://clayshaper.com/" />
+    <meta property="og:type" content="website" />
+    <meta property="og:site_name" content="ClayShaper" />
+    <meta property="og:title" content="ClayShaper — Ceramic Slicer for Clay 3D Printers" />
+    <meta property="og:description" content="Slice STLs, design pottery, and export G-code for clay 3D printers — a free, browser-based ceramic slicer." />
+    <meta property="og:url" content="https://clayshaper.com/" />
+    <meta property="og:image" content="https://clayshaper.com/static/og-image.jpg" />
+    <meta property="og:image:width" content="1200" />
+    <meta property="og:image:height" content="630" />
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:title" content="ClayShaper — Ceramic Slicer for Clay 3D Printers" />
+    <meta name="twitter:description" content="Slice STLs, design pottery, and export G-code for clay 3D printers — a free, browser-based ceramic slicer." />
+    <meta name="twitter:image" content="https://clayshaper.com/static/og-image.jpg" />
 
     <!-- Desktop app window: Chrome tints the title bar from theme-color, and
          takes the taskbar / title-bar icon from these. Without them the app
@@ -48,54 +62,213 @@
         border-radius:2px; animation:slide 1.0s ease-in-out infinite; }
       body.cs-busy #busybar { display:block; }
       body.cs-busy { cursor:progress; }
+
+      /* Boot problem panel (see the boot watchdog script below). Same palette
+         as the loading screen so it reads as ClayShaper talking, not a crash. */
+      #boot .fail { max-width:460px; margin:18px 16px 0; text-align:center;
+        color:#3B3B3B; font-size:0.95rem; line-height:1.45; }
+      #boot .fail h2 { font-size:1.15rem; margin:0 0 8px; color:#1A1A1A; }
+      #boot .fail p { margin:6px 0; }
+      #boot .fail button { margin-top:14px; padding:9px 26px; border:0;
+        border-radius:6px; background:#B0603C; color:#FFF; font-size:1rem;
+        cursor:pointer; }
+      #boot .fail button:hover { background:#964F30; }
+      #boot .fail details { margin-top:14px; text-align:left; color:#8A8178;
+        font-size:0.8rem; }
+      #boot .fail pre { white-space:pre-wrap; word-break:break-word;
+        max-height:180px; overflow:auto; background:#F7F5F2; padding:8px;
+        border-radius:4px; }
     </style>
   </head>
   <body>
     <div id="boot">
       <div class="wm">Clay<span>Shaper</span></div>
-      <div class="sub">Warming up the kiln — loading Python in your browser…</div>
+      <div class="sub">Warming up the kiln: loading Python in your browser…</div>
       <div class="sub" style="font-size:0.8rem">first visit takes ~20s, then it's cached</div>
       <div class="bar"><i></i></div>
     </div>
     <div id="busybar"><i></i></div>
     <div id="root"></div>
+    <script>
+      // Boot watchdog. A plain (non-module) script on purpose, so it runs
+      // even when the module below cannot (a module whose import fails never
+      // runs at all), and so the 60 s timer starts before any CDN request
+      // can hang. Measured in the review: with cdn.jsdelivr.net
+      // unreachable the kiln screen just spun forever (still up at 60 s, root
+      // empty, no error), and the desktop exe launched offline more than
+      // 10 min after its last online start died in micropip, because
+      // pypi.org/simple is only cached for 600 s (jsdelivr is cached for a
+      // year). Either way the user needs to be told what is wrong.
+      (function () {
+        var BOOT_TIMEOUT_MS = 60000;   // a normal cold first visit is ~20 s
+        var settled = false, shown = false, errors = [];
+
+        function note(msg) {
+          if (msg && errors.length < 8) errors.push(String(msg));
+        }
+
+        function show(kind, detail) {
+          if (settled || shown) return;
+          shown = true;
+          var boot = document.getElementById("boot");
+          if (!boot) return;
+          var offline = (navigator.onLine === false);
+          var lead = kind === "timeout"
+            ? "This is taking much longer than usual."
+            : "ClayShaper could not finish starting.";
+          var panel = document.createElement("div");
+          panel.className = "fail";
+          panel.innerHTML =
+            "<h2>" + lead + "</h2>" +
+            "<p>ClayShaper needs an internet connection the first time it starts " +
+            "(and now and then after that): it downloads Python and its libraries " +
+            "from cdn.jsdelivr.net and pypi.org, then keeps them cached.</p>" +
+            "<p>" + (offline
+              ? "Your computer looks offline right now. Connect to the internet, then press Retry."
+              : "Those download servers could not be reached, or the download stopped. " +
+                "Check your connection (or a firewall or ad blocker), then press Retry.") +
+            "</p>" +
+            (kind === "timeout"
+              ? "<p style=\"font-size:0.85rem;color:#8A8178\">If your connection is just slow, " +
+                "it may still finish on its own: this screen will go away when it does.</p>"
+              : "") +
+            "<button type=\"button\">Retry</button>";
+          panel.querySelector("button").onclick = function () { location.reload(); };
+          var info = (detail ? [detail] : []).concat(errors);
+          if (info.length) {
+            var d = document.createElement("details");
+            var s = document.createElement("summary");
+            s.textContent = "Technical details";
+            var pre = document.createElement("pre");
+            pre.textContent = info.join("\n\n");   // textContent: never parse error text as HTML
+            d.appendChild(s); d.appendChild(pre); panel.appendChild(d);
+          }
+          // Keep the wordmark; drop the "warming up" lines. On a hard failure
+          // also drop the progress bar so it does not look like it is still
+          // trying. On a timeout leave it: a slow line may yet get there.
+          var kids = Array.prototype.slice.call(boot.children);
+          kids.forEach(function (el) {
+            if (el.classList.contains("sub")) el.remove();
+            if (kind !== "timeout" && el.classList.contains("bar")) el.remove();
+          });
+          boot.appendChild(panel);
+        }
+
+        // Called by the module script once the app has painted.
+        window.__csBootDone = function () { settled = true; clearTimeout(timer); };
+        window.__csBootFail = show;
+
+        var timer = setTimeout(function () { show("timeout"); }, BOOT_TIMEOUT_MS);
+
+        // Capture phase so failed <script>/<link> loads are seen too (resource
+        // errors do not bubble). A CDN resource failing to load during boot is
+        // decisive, so say so straight away instead of waiting out the timer.
+        // Anything else is only recorded, for the details box: stlite reports
+        // its own fatal boot errors in the page, which the module script
+        // watches for.
+        window.addEventListener("error", function (e) {
+          if (settled) return;
+          var t = e && e.target;
+          var url = t && t !== window && (t.src || t.href);
+          if (url) {
+            note("Could not load " + url);
+            if (/cdn\.jsdelivr\.net|pypi\.org|pythonhosted\.org/.test(url)) {
+              show("error", "Could not load " + url);
+            }
+            return;
+          }
+          note((e && e.message) || "Script error");
+        }, true);
+        window.addEventListener("unhandledrejection", function (e) {
+          if (settled) return;
+          var r = e && e.reason;
+          note("Unhandled: " + ((r && (r.stack || r.message)) || r));
+        });
+      })();
+    </script>
     <script type="module">
-      import { mount } from "https://cdn.jsdelivr.net/npm/@stlite/browser@0.85.1/build/stlite.js";
+      // Dynamic import (not a static `import ... from`) so a failed download
+      // can be caught and reported. Tested in Chrome: with a static import of
+      // a missing file the module silently never ran, and neither the script
+      // element's onerror nor window "error" fired, so the kiln screen just
+      // sat there until the watchdog's 60 s timer.
+      let mount;
+      try {
+        ({ mount } = await import("https://cdn.jsdelivr.net/npm/@stlite/browser@0.85.1/build/stlite.js"));
+      } catch (err) {
+        window.__csBootFail && window.__csBootFail("error",
+          "Could not load the stlite engine from cdn.jsdelivr.net\n" + err);
+        throw err;
+      }
       const controller = mount(
         {
           entrypoint: "app.py",
           files: {
-            "app.py":             { url: "./app.py?v=18" },
-            "stl_slicer.py":      { url: "./stl_slicer.py?v=18" },
-            "clay_lib.py":        { url: "./clay_lib.py?v=18" },
-            "gcode_validator.py": { url: "./gcode_validator.py?v=18" },
-            "preview3d.py":       { url: "./preview3d.py?v=18" },
-            "brand.py":           { url: "./brand.py?v=18" },
-            "sample_library.py":  { url: "./sample_library.py?v=18" },
-            "nearest.py":         { url: "./nearest.py?v=18" },
-            "assets/models/Coil Bowl.stl":  { url: "./assets/models/Coil Bowl.stl?v=18" },
-            "assets/models/Ripple Cup.stl":  { url: "./assets/models/Ripple Cup.stl?v=18" },
-            "assets/models/Belly Vase.stl":  { url: "./assets/models/Belly Vase.stl?v=18" },
-            "assets/models/Twist Pot.stl":  { url: "./assets/models/Twist Pot.stl?v=18" },
-            "assets/models/Cuboid.stl":  { url: "./assets/models/Cuboid.stl?v=18" },
-            "assets/thumbs/Coil Bowl.png":  { url: "./assets/thumbs/Coil Bowl.png?v=18" },
-            "assets/thumbs/Ripple Cup.png":  { url: "./assets/thumbs/Ripple Cup.png?v=18" },
-            "assets/thumbs/Belly Vase.png":  { url: "./assets/thumbs/Belly Vase.png?v=18" },
-            "assets/thumbs/Twist Pot.png":  { url: "./assets/thumbs/Twist Pot.png?v=18" },
-            "assets/thumbs/Cuboid.png":  { url: "./assets/thumbs/Cuboid.png?v=18" },
-            "assets/gcodes/Coil Bowl (sample).gcode": { url: "./assets/gcodes/Coil Bowl (sample).gcode?v=18" },
+            "app.py":             { url: "./app.py?v=19" },
+            "stl_slicer.py":      { url: "./stl_slicer.py?v=19" },
+            "clay_lib.py":        { url: "./clay_lib.py?v=19" },
+            "gcode_validator.py": { url: "./gcode_validator.py?v=19" },
+            "preview3d.py":       { url: "./preview3d.py?v=19" },
+            "brand.py":           { url: "./brand.py?v=19" },
+            "sample_library.py":  { url: "./sample_library.py?v=19" },
+            "nearest.py":         { url: "./nearest.py?v=19" },
+            "offset2d.py":        { url: "./offset2d.py?v=19" },
+            "assets/models/Coil Bowl.stl":  { url: "./assets/models/Coil Bowl.stl?v=19" },
+            "assets/models/Ripple Cup.stl":  { url: "./assets/models/Ripple Cup.stl?v=19" },
+            "assets/models/Belly Vase.stl":  { url: "./assets/models/Belly Vase.stl?v=19" },
+            "assets/models/Twist Pot.stl":  { url: "./assets/models/Twist Pot.stl?v=19" },
+            "assets/models/Cuboid.stl":  { url: "./assets/models/Cuboid.stl?v=19" },
+            "assets/models/Cuboid Simple.stl":  { url: "./assets/models/Cuboid Simple.stl?v=19" },
+            "assets/thumbs/Coil Bowl.png":  { url: "./assets/thumbs/Coil Bowl.png?v=19" },
+            "assets/thumbs/Ripple Cup.png":  { url: "./assets/thumbs/Ripple Cup.png?v=19" },
+            "assets/thumbs/Belly Vase.png":  { url: "./assets/thumbs/Belly Vase.png?v=19" },
+            "assets/thumbs/Twist Pot.png":  { url: "./assets/thumbs/Twist Pot.png?v=19" },
+            "assets/thumbs/Cuboid.png":  { url: "./assets/thumbs/Cuboid.png?v=19" },
+            "assets/thumbs/Cuboid Simple.png":  { url: "./assets/thumbs/Cuboid Simple.png?v=19" },
+            "assets/gcodes/Coil Bowl (sample).gcode": { url: "./assets/gcodes/Coil Bowl (sample).gcode?v=19" },
           },
           // numpy / scipy / shapely / Pillow ship as prebuilt Pyodide wheels;
           // trimesh / plotly / networkx are pure-Python via micropip.
           // networkx: trimesh needs it to chain section edges into paths.
           // scipy: REQUIRED — trimesh.section() -> edges_to_path() imports it
           // internally. Dropping it silently breaks STL slicing (every section
-          // throws and the slicer returns zero layers). Our own engine code no
-          // longer calls scipy directly (see nearest.py), but trimesh does.
+          // throws and the slicer returns zero layers). Since it has to load
+          // anyway, nearest.py now uses its cKDTree too (2.5x faster slicing
+          // in Pyodide), with a numpy fallback if scipy ever fails to import.
           // lxml: trimesh's 3MF reader parses the model XML with it. Desktop
           // Python usually has it already, so a missing lxml only shows up in
           // the browser build, as a ModuleNotFoundError on the first 3MF slice.
-          requirements: ["numpy", "scipy", "shapely", "trimesh", "plotly", "networkx", "Pillow", "lxml"],
+          //
+          // Version pins (v1.0.14 review). Unpinned, micropip took whatever
+          // PyPI had that day: the browser was running trimesh 5.1.1 while
+          // the desktop and every regression test use 4.12.2. So:
+          //  * trimesh / plotly come from PyPI and are pinned to the exact
+          //    versions the desktop tests run (trimesh 4.12.2, plotly 6.7.0).
+          //    Both are pure Python and support Pyodide's Python 3.12.
+          //  * numpy / scipy / shapely / Pillow / lxml / networkx are
+          //    Pyodide's own builds and stay unpinned on purpose: Pyodide only
+          //    has the one version in its lockfile, fixed by the stlite
+          //    version in the URLs above (stlite 0.85.1 = Pyodide 0.27.6:
+          //    numpy 2.0.2, scipy 1.14.1, shapely 2.0.6, Pillow 10.2.0,
+          //    lxml 5.2.1, networkx 3.4.2, plus narwhals 1.24.1 and packaging
+          //    24.2 that plotly pulls in). Pinning a different version here
+          //    would either fail to install (compiled packages) or fetch a
+          //    second copy from PyPI. Desktop has newer numpy/shapely; that
+          //    GEOS/numpy gap, not trimesh, is why browser G-code can differ
+          //    from desktop by float tie-breaks on some models (Twist Pot),
+          //    and why the Pyodide check before each release still matters.
+          //  * networkx 3.4.2 (browser) vs 3.6.1 (desktop) was checked: the
+          //    whole quick regression suite gives byte-identical G-code with
+          //    either, so it is left on Pyodide's copy (no PyPI fetch).
+          // When stlite is bumped, re-check these against its Pyodide
+          // lockfile (pyodide-lock.json) before shipping.
+          //
+          // pyclipper: every polygon offset in the slicer (offset2d.py). GEOS
+          // buffer() aborts the whole runtime in Pyodide on crumpled outlines
+          // (Taco Bell Bag, Paper Bag Vase, Bubble Vase, Bulldog, Bulbasaur);
+          // pyclipper ships in Pyodide's own package set, like shapely, so it
+          // stays unpinned for the same reason (0.27.6 lockfile: 1.3.0.post5).
+          requirements: ["numpy", "scipy", "shapely", "trimesh==4.12.2", "plotly==6.7.0", "networkx", "Pillow", "lxml", "pyclipper"],
           // stlite does NOT read .streamlit/config.toml — the theme has to be
           // passed here, or widgets fall back to Streamlit's default red
           // (sliders, checkmarks, focus rings) instead of the clay palette.
@@ -112,9 +285,31 @@
       window.__ctrl = controller;
 
       // Hide the boot screen once the app has painted real content.
+      // stlite reports a fatal boot problem (for example micropip failing to
+      // reach pypi.org) as an "Error during booting up" toast with a Python
+      // traceback, and that toast text alone is long enough to pass the
+      // length test below, so the kiln screen used to fade out onto a blank
+      // page with a traceback in the corner. Check for it first and show the
+      // friendly boot-problem panel instead (traceback under its details).
       const bootTimer = setInterval(() => {
         const root = document.getElementById("root");
-        if (root && root.innerText.trim().length > 40) {
+        const toast = document.querySelector(".Toastify");
+        const said = ((root ? root.innerText : "") + "\n" + (toast ? toast.innerText : ""));
+        if (said.indexOf("Error during booting up") >= 0) {
+          clearInterval(bootTimer);
+          window.__csBootFail && window.__csBootFail("error", said.trim().slice(0, 4000));
+          return;
+        }
+        // stlite's progress toasts ("Loading Pyodide. Mounting files.
+        // Installing packages. ...") also render inside #root, and on their
+        // own pass 40 characters at "Installing packages", about 5 s into a
+        // cached boot and BEFORE micropip has run. So the kiln screen went
+        // away early, and a micropip failure (the offline-exe case) then
+        // landed on a blank page. Count only the app's own text.
+        const appLen = root ? root.innerText.trim().length -
+          (toast && root.contains(toast) ? toast.innerText.trim().length : 0) : 0;
+        if (appLen > 40) {
+          window.__csBootDone && window.__csBootDone();
           const b = document.getElementById("boot");
           b.style.opacity = "0";
           setTimeout(() => b.remove(), 450);

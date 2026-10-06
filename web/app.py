@@ -36,8 +36,20 @@ import re
 import json
 from urllib.parse import quote as _q
 import time
+import math
 import hashlib
 from datetime import datetime
+
+# Design's "Generate STL Model" meshes through numpy-stl, which is not in the
+# browser requirements (index.html) and so is missing in the web build and
+# the exe that wraps it. clay_lib swallows the ImportError and returns False,
+# so the button always ended in a red "STL Generation Failed". Only offer it
+# where the library is really there (running from source with it installed).
+try:
+    from stl import mesh as _numpy_stl_mesh   # noqa: F401  (availability probe)
+    HAS_NUMPY_STL = True
+except ImportError:
+    HAS_NUMPY_STL = False
 
 # Resolve asset paths relative to this file so the app runs from any CWD.
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -150,12 +162,120 @@ def format_material(ml, unit=None):
 
 
 # --- HELPERS ---
-def render_validation(text, profile, nozzle=None, layer_height=None):
-    """Run the validator on a G-code string and render a pass/warn/fail report.
-    Returns the report so callers can gate the download button."""
-    rep = validate_gcode(text, profile, nozzle=nozzle, layer_height=layer_height)
+def gcode_md5(text):
+    """Content hash of a G-code string: the cache key for its report/preview."""
+    return hashlib.md5(text.encode("utf-8", "replace")).hexdigest()
 
-    verdict = rep.verdict
+
+def _freeze(v):
+    """A hashable, order-independent copy of a profile value (dicts, lists)."""
+    if isinstance(v, dict):
+        return tuple(sorted((str(k), _freeze(x)) for k, x in v.items()))
+    if isinstance(v, (list, tuple, set)):
+        return tuple(_freeze(x) for x in v)
+    return v
+
+
+# Every widget touch reruns the whole script, and the validator was most of
+# each rerun: 1.1-3.0 s native for the Coil Bowl / Belly Vase default slices,
+# 4.5-21 s in the browser, and 8-10 s of every 9-11 s Design rerun under
+# Pyodide. Moving the Preview layers slider, switching the theme or ticking a
+# preview toggle does not change the G-code, so the report is cached. The key
+# is (G-code md5, printer name, the LIVE profile frozen, nozzle, layer
+# height): Advanced lets the user edit the bed and centre, so keying on the
+# slice alone would keep showing the report for the old bed. The cached value
+# is a plain dict (st.cache_data pickles it; the Issue objects become tuples)
+# and only two entries are kept because the browser heap is small. The report
+# widgets themselves are still drawn every run, from that dict.
+# use_file_settings is part of the key too: Validate mode reads the bead width
+# the file declares, Slice and Design pass the real one, and the same G-code
+# checked both ways must not share one cached report.
+@st.cache_data(max_entries=2, show_spinner=False)
+def _validate_cached(md5, printer, profile_key, nozzle, layer_height,
+                     use_file_settings, _text, _profile):
+    rep = validate_gcode(_text, _profile, nozzle=nozzle, layer_height=layer_height,
+                         use_file_settings=use_file_settings)
+    return {"verdict": rep.verdict, "stats": dict(rep.stats),
+            "issues": [(i.severity, i.category, i.message, i.line_no)
+                       for i in rep.issues]}
+
+
+# The Validate tab's 3D preview parse (8 s native for a 52 MB file), cached on
+# the file's content the same way. One entry: it only ever shows one file.
+@st.cache_data(max_entries=1, show_spinner=False)
+def _toolpath_cached(md5, _text):
+    return extract_toolpath(_text)
+
+
+def bounds_failed(rep):
+    """True when the report's Bounds rule FAILed (the toolpath leaves the bed)."""
+    return any(sev == FAIL and cat == "Bounds" for sev, cat, _m, _l in rep["issues"])
+
+
+def download_blocked(rep, key):
+    """Gate a G-code download on the Bounds check. A toolpath that leaves the
+    build volume gets clamped at the soft endstops (walls flatten into chords
+    and clay piles up along the edge) or drives the head into the frame, and
+    Slice and Design used to offer it for download anyway. Only Bounds blocks:
+    the other FAIL rules (speeds, start codes) keep their red report but no
+    lock, because a Slice or Design user cannot edit the file to clear a
+    false positive. The tick box is the explicit way out for a machine whose
+    real volume is bigger than its profile; `key` carries the G-code hash so
+    a tick never carries over to a different file. Returns True to disable."""
+    if not bounds_failed(rep):
+        return False
+    anyway = st.checkbox(
+        "Download anyway: my printer's real build volume is bigger than this profile",
+        key=key,
+        help="Leave this off unless you have measured your machine. A move "
+             "past the bed edge is clamped by the firmware or hits the frame.")
+    if not anyway:
+        st.caption(":material/block: Download is blocked because the toolpath "
+                   "leaves the build volume (see Bounds in the report). Lower "
+                   "the Scale or move the centre, then slice again.")
+    return not anyway
+
+
+def bed_fit(extents, profile, line_width):
+    """(fits, scale factor that would just fit) for a model of `extents`
+    (x, y, z in mm) on this profile. Same rule as the slicer's own check:
+    XY gets one bead of slack (half a bead each side), Z the full max_z."""
+    room = (float(profile["bed_x"]) - line_width,
+            float(profile["bed_y"]) - line_width, float(profile["max_z"]))
+    fits = all(e <= r + 1e-9 for e, r in zip(extents, room))
+    ratios = [r / e for e, r in zip(extents, room) if e > 0]
+    return fits, (min(ratios) if ratios else float("inf"))
+
+
+def bed_fit_warning(extents, scale_pct, fit_ratio, printer, profile, line_width):
+    """The 'model is bigger than the printer' warning with a Scale to try."""
+    try_pct = int(math.floor(scale_pct * fit_ratio))
+    if try_pct >= 10:
+        hint = f"Try **Scale {try_pct}%** or less."
+    else:
+        hint = ("Even the smallest Scale (10%) is too big, so the file is "
+                "probably in the wrong units (metres instead of millimetres).")
+    st.warning(
+        f"**This model is bigger than the {printer}.** At Scale {scale_pct:g}% "
+        f"it is {extents[0]:.0f} x {extents[1]:.0f} x {extents[2]:.0f} mm; the "
+        f"bed takes {float(profile['bed_x']) - line_width:g} x "
+        f"{float(profile['bed_y']) - line_width:g} mm (bed less one "
+        f"{line_width:g} mm bead) and {float(profile['max_z']):g} mm of height. "
+        f"{hint}", icon=":material/fit_screen:")
+
+
+def render_validation(text, profile, nozzle=None, layer_height=None, md5=None,
+                      printer=None, use_file_settings=False):
+    """Validate a G-code string (cached, see _validate_cached) and render the
+    pass/warn/fail report. Returns the report dict (verdict, stats, issues) so
+    callers can gate the download button. use_file_settings=True (Validate
+    mode) lets a bead width / layer height the file declares replace the
+    sidebar's, see validate_gcode."""
+    rep = _validate_cached(md5 or gcode_md5(text), printer, _freeze(profile),
+                           nozzle, layer_height, bool(use_file_settings),
+                           text, profile)
+
+    verdict = rep["verdict"]
     if verdict == "fail":
         st.error("FAIL — do not print this file. See the issues below.",
                  icon=":material/block:")
@@ -169,7 +289,7 @@ def render_validation(text, profile, nozzle=None, layer_height=None):
         st.success("PASS — all checks clean. Ready to print.",
                    icon=":material/check_circle:")
 
-    s = rep.stats
+    s = rep["stats"]
     m1, m2, m3, m4 = st.columns(4)
     m1.metric("Footprint (mm)", f"{s['min_x']}–{s['max_x']} X")
     m2.metric("Height (mm)", s["max_z"] if s["max_z"] is not None else "—")
@@ -179,12 +299,12 @@ def render_validation(text, profile, nozzle=None, layer_height=None):
                    "water content and how the machine is calibrated.")
 
     dot_colors = {FAIL: "#B3402A", WARN: "#D08A2E", SUGGEST: "#3D6EA8", INFO: "#5E8B6F"}
-    for issue in rep.issues:
-        line = f" · line {issue.line_no}" if issue.line_no else ""
+    for severity, category, message, line_no in rep["issues"]:
+        line = f" · line {line_no}" if line_no else ""
         dot = (f"<span style='display:inline-block;width:10px;height:10px;"
-               f"border-radius:50%;background:{dot_colors.get(issue.severity, '#999')};"
+               f"border-radius:50%;background:{dot_colors.get(severity, '#999')};"
                f"margin-right:9px'></span>")
-        st.markdown(f"{dot}**{issue.category}** — {issue.message}{line}",
+        st.markdown(f"{dot}**{category}**: {message}{line}",
                     unsafe_allow_html=True)
     return rep
 
@@ -419,7 +539,7 @@ def setup_tips_dialog():
             "**randotechnerd@gmail.com** — we'll work something out.")
 
 
-@st.dialog("Add your printer — BETA")
+@st.dialog("Add your printer (BETA)")
 def add_printer_dialog():
     st.caption(
         "**BETA** — this builds a working local profile with a *generic* clay "
@@ -459,10 +579,19 @@ def add_printer_dialog():
             if not nozzles:
                 nozzles = [2.0, 3.0]
             name = f"{brand_v} {model_v}"
-            # Generic start-up: the Eazao sequence minus its dual-motor mix codes.
-            generic_start = "\n".join(
+            # Generic start-up: the Eazao sequence minus its dual-motor mix
+            # codes, with cold extrusion switched on FIRST. Eazao's bare
+            # "M302" only works because their firmware is built with
+            # EXTRUDE_MINTEMP 0; on stock Marlin 1.1.x/2.x a bare M302 only
+            # REPORTS the setting, so a converted FDM board (thermistor or
+            # dummy resistor reading ~25 C, under the default 170 C minimum)
+            # drops the E of every move and the head prints in the air. It
+            # also came after the G1 E2 prime. "M302 S0" sets the minimum to
+            # 0 C on Marlin 1.1.x/2.x, is still accepted by 1.0.x and the
+            # Eazao fork, and sits above everything that extrudes.
+            generic_start = "M302 S0 ;allow cold extrusion (clay has no heater)\n" + "\n".join(
                 ln for ln in EAZAO_START_GCODE.splitlines()
-                if not ln.startswith(("M163", "M164")))
+                if not ln.startswith(("M163", "M164", "M302")))
             st.session_state.custom_printers[name] = {
                 "bed_x": float(bx), "bed_y": float(by), "max_z": float(mz),
                 "center_x": float(bx) / 2, "center_y": float(by) / 2,
@@ -489,8 +618,12 @@ def add_printer_dialog():
     # another button's branch never fires in Streamlit).
     _done = st.session_state.get("new_printer_done")
     if _done:
-        st.success(f"**{_done['name']}** created and selected — it's now in "
-                   "your printer list (marked BETA) and saved on this device.")
+        # Not "saved on this device": the web build (and the exe, which
+        # serves the same page) writes custom_printers.json into the browser's
+        # in-memory file system, which is rebuilt on every page load.
+        st.success(f"**{_done['name']}** created and selected. It is in your "
+                   "printer list (marked BETA) for this visit only: reloading "
+                   "the page forgets it.")
         st.markdown(
             "**One more thing — help us support it officially:** "
             f"[email us these details](mailto:randotechnerd@gmail.com?"
@@ -919,20 +1052,36 @@ with st.sidebar:
     st.markdown(printer_dropdown_html(), unsafe_allow_html=True)
 
     # Web build: native add/select (no URL navigation under stlite).
-    if st.button("Add your printer — BETA", icon=":material/add:",
-                 use_container_width=True, key="add_printer_btn"):
+    # Both go through callbacks, which run BEFORE the next script run, never
+    # through an st.rerun() here. A rerun from this spot ended the run before
+    # the Layer Height / Base / First-layer sliders below were drawn, and
+    # Streamlit counts that as a finished run: it drops the state of every
+    # keyed widget it did not see, the setdefault() seeds then put the
+    # defaults back, and a switch from Tronxy Test A to Test B (same nozzles,
+    # same range) turned 0.8 / 0.9 / 0.5 / 120% into 0.6 / 1.0 / 1.0 / 100%.
+    def _open_add_printer():
         st.session_state.show_add_printer = True
-        st.rerun()
+
+    st.button("Add your printer (BETA)", icon=":material/add:",
+              use_container_width=True, key="add_printer_btn",
+              on_click=_open_add_printer)
+    # (The dialog opens in this same run: the callback has set the flag
+    # before the script reaches the show_add_printer check near the top.)
     # Native picker whenever there is more than one selectable profile
     # (built-in test profiles count, not only user-added printers).
     if len(ALL_PROFILES) > 1:
         _opts = list(ALL_PROFILES.keys())
-        _pick = st.selectbox("Active printer", _opts,
-                             index=_opts.index(printer_name) if printer_name in _opts else 0,
-                             key="printer_pick")
-        if _pick != printer_name:
-            st.session_state.printer_name = _pick
-            st.rerun()
+
+        def _on_printer_pick():
+            st.session_state.printer_name = st.session_state.printer_pick
+
+        # printer_name is the one source of truth; the selectbox mirrors it,
+        # so a printer chosen elsewhere (a new printer from the dialog) shows
+        # here instead of being switched straight back by a stale pick.
+        if st.session_state.get("printer_pick") != printer_name:
+            st.session_state.printer_pick = printer_name if printer_name in _opts else _opts[0]
+        st.selectbox("Active printer", _opts, key="printer_pick",
+                     on_change=_on_printer_pick)
 
     st.divider()
     st.header("Process")
@@ -1016,10 +1165,18 @@ with st.sidebar:
     st.session_state.setdefault("s_blh", min(_base_lh_default, _lh_max))
     if "s_blh" in st.session_state:
         st.session_state.s_blh = min(max(st.session_state.s_blh, 0.2), _lh_max)
-    base_layer_h = st.slider(
-        "Base layer height (mm)", 0.2, _lh_max, key="s_blh",
-        help="Height of the solid base layers, kept separate from the walls. Thin layers help the walls hold overhangs but starve the base, which then prints as thin slivers instead of solid cords. Leave this at the factory height unless the base is piling up.",
-    )
+    if mode == "Design":
+        # Design builds its base at the wall layer height (generate_spiral_path
+        # has no base-height input yet), so the slider did nothing there while
+        # claiming to. Hidden until Design honours it. The assignment above
+        # still runs every time, which keeps the value: Streamlit only drops
+        # an undrawn widget's state when nothing re-assigns its key.
+        base_layer_h = st.session_state.s_blh
+    else:
+        base_layer_h = st.slider(
+            "Base layer height (mm)", 0.2, _lh_max, key="s_blh",
+            help="Height of the solid base layers, kept separate from the walls. Thin layers help the walls hold overhangs but starve the base, which then prints as thin slivers instead of solid cords. Leave this at the factory height unless the base is piling up.",
+        )
 
     st.session_state.setdefault("s_flh", base_layer_h)
     first_layer_h = st.slider(
@@ -1366,8 +1523,13 @@ if mode == "Slice STL":
         if stl_file is not None:
             _ext = "." + stl_file.name.rsplit(".", 1)[-1].lower()
             st.session_state.model_ext = _ext if _ext in (".stl", ".3mf") else ".stl"
+            _payload = stl_file.getvalue()
             st.session_state.current_model = (
-                "upload", stl_file.name.rsplit(".", 1)[0], stl_file.getvalue())
+                "upload", stl_file.name.rsplit(".", 1)[0], _payload)
+            # Hashed once here, not every rerun (uploads can be hundreds of
+            # MB): the slice key needs the CONTENT, because a different file
+            # uploaded under the same name used to leave the old G-code live.
+            st.session_state.model_md5 = hashlib.md5(_payload).hexdigest()
             st.rerun()
         if st.button("No model? Browse the included samples →",
                      type="tertiary", icon=":material/grid_view:"):
@@ -1381,6 +1543,7 @@ if mode == "Slice STL":
                          help="Load a different STL"):
                 st.session_state.pop("current_model", None)
                 st.session_state.pop("stl_uploader", None)
+                st.session_state.pop("model_md5", None)
                 st.rerun()
         with c_chip:
             src = "sample model" if kind == "sample" else "uploaded STL"
@@ -1444,14 +1607,77 @@ if mode == "Slice STL":
                                            "the first layers pile up or squeeze out.")
         with sc4:
             st.markdown("**Quality**")
-            path_res = st.slider("Path resolution (mm)", 0.3, 5.0, 1.5, 0.1,
-                                 help="Max segment length. Lower = smoother walls, larger files.")
+            # Floor 0.8 mm (was 0.3). Below about 1 mm the segments do not
+            # make a 2-3 mm clay bead any smoother, but they multiply the
+            # line rate: Twist Pot wall at 1.5 mm = 18 blocks/s, at 0.5 mm =
+            # 55 blocks/s with 95% of moves under Marlin's 20 ms minimum
+            # segment time, which stutters as soon as a USB/OctoPrint link
+            # falls behind (6.4 hitches/min, 27/min streamed at 50 lines/s).
+            path_res = st.slider("Path resolution (mm)", 0.8, 5.0, 1.5, 0.1,
+                                 help="Longest segment in the toolpath. 1.5 mm is plenty for a "
+                                      "clay bead. Values below 1 mm do not smooth a clay bead "
+                                      "any further, make much bigger files, and can stutter "
+                                      "when printing over USB.")
 
     model_scale = st.session_state.get("scale_pct", 100) / 100.0
+    # What the model IS, not just its name: the sample's path, or the md5 of
+    # the uploaded bytes (computed once at upload).
+    model_id = None
+    if model_name is not None:
+        _kind, _, _payload = st.session_state.current_model
+        if _kind == "upload":
+            if not st.session_state.get("model_md5"):
+                st.session_state.model_md5 = hashlib.md5(_payload).hexdigest()
+            model_id = ("upload", st.session_state.model_md5)
+        else:
+            model_id = ("sample", _payload)
+    # Center X/Y move every XY coordinate in the G-code, so they belong in the
+    # key: before, a Center X edit after slicing left the old placement
+    # downloadable with no stale warning.
     slice_key = (model_name, nozzle, layer_h, int(bottom_layers) if model_name else 0,
                  staggered, stagger_off, vase_mode, path_res, printer_name,
                  first_layer_flow, first_layer_h, continuous, fold_soften, model_scale,
-                 stagger_fill, base_flow_pct, base_layer_h)
+                 stagger_fill, base_flow_pct, base_layer_h,
+                 model_id, float(profile["center_x"]), float(profile["center_y"]))
+
+    # Bed fit BEFORE slicing. An oversize model used to slice for 17-50 s
+    # (over a gigabyte of browser heap for a 320 mm cup) only for the
+    # validator to FAIL every move at the end. Reading the mesh bounds is
+    # cheap next to slicing and is done once per model, then scaled here.
+    model_size = None
+    if model_id is not None:
+        _cached_ext = st.session_state.get("_model_extents")
+        if _cached_ext and _cached_ext[0] == model_id:
+            model_size = _cached_ext[1]
+        else:
+            _kind, _, _payload = st.session_state.current_model
+            _tmp = None
+            try:
+                import trimesh
+                if _kind == "upload":
+                    with tempfile.NamedTemporaryFile(
+                            suffix=st.session_state.get("model_ext", ".stl"),
+                            delete=False) as _tf:
+                        _tf.write(_payload)
+                        _tmp = _tf.name
+                _m = trimesh.load(_tmp or _payload, force="mesh")
+                if len(getattr(_m, "faces", ())):
+                    model_size = tuple(float(v) for v in _m.extents)
+            except Exception:
+                model_size = None     # the slicer reports a broken file itself
+            finally:
+                if _tmp:
+                    try:
+                        os.unlink(_tmp)
+                    except OSError:
+                        pass
+            st.session_state._model_extents = (model_id, model_size)
+    if model_size is not None:
+        _ext_now = tuple(v * model_scale for v in model_size)
+        _fits, _ratio = bed_fit(_ext_now, profile, nozzle)
+        if not _fits:
+            bed_fit_warning(_ext_now, model_scale * 100, _ratio, printer_name,
+                            profile, nozzle)
 
     do_slice = st.button("Slice", type="primary", icon=":material/play_arrow:",
                          use_container_width=True, disabled=(model_name is None))
@@ -1486,8 +1712,10 @@ if mode == "Slice STL":
             # render with these, not the live sliders (otherwise nudging Layer
             # Height after slicing draws thin slatted coils with fake gaps).
             st.session_state.slice_result = {"key": slice_key, "gcode": gcode_str,
+                                             "md5": gcode_md5(gcode_str),
                                              "layers": layers, "name": model_name,
-                                             "layer_h": layer_h, "nozzle": nozzle}
+                                             "layer_h": layer_h, "nozzle": nozzle,
+                                             "scale_pct": model_scale * 100}
         finally:
             if kind == "upload":
                 os.unlink(slice_path)
@@ -1548,6 +1776,44 @@ if mode == "Slice STL":
                    if _short else "")
                 + (f"  \n\n`{_d['last_error']}`" if _d.get("last_error") else ""),
                 icon=":material/warning:")
+        # The slicer's own bed-fit verdict. Only needed when the pre-slice
+        # check above could not read the mesh bounds itself (otherwise it is
+        # already showing, for the CURRENT scale), and only for a fresh
+        # slice: the verdict belongs to the scale the slice was made at.
+        if (_d.get("fits_bed") is False and model_size is None and not stale
+                and _d.get("fit_scale")):
+            _sc = _d.get("fit_scale")
+            _cur = result.get("scale_pct", 100)     # the scale it was sliced at
+            st.warning(f"**This model is bigger than the {printer_name}.** "
+                       f"Try **Scale {int(math.floor(_cur * _sc))}%** or less.",
+                       icon=":material/fit_screen:")
+        # Floating start: the first bead is laid above the first layer, so it
+        # drops through air and the piece has no floor (Eazao's own Pleated
+        # Vase stands on a ring foot ~1.5 mm wide under a 3 mm bead and first
+        # extrudes at Z3.6). Read with .get so older slicers simply skip it.
+        _float_z = _d.get("floating_start")
+        if _float_z:
+            st.warning(
+                f"**The print starts in mid-air, at {float(_float_z):.1f} mm.** "
+                "The bottom of this model does not rest flat on the bed, or its "
+                f"foot is thinner than one {result.get('nozzle', nozzle):g} mm "
+                "bead, so nothing is printed below that height and the first "
+                "coil falls onto the bed with no floor under it. Give the model "
+                "a flat foot at least one bead wide, or pick a smaller nozzle.",
+                icon=":material/vertical_align_bottom:")
+        # Section picker give-ups: heights where the outline narrowed
+        # abruptly and stayed narrow (a neck, a knob, or a mesh glitch).
+        _giveups = list(_d.get("pick_giveups") or [])
+        if _giveups:
+            _zs = ", ".join(f"{float(z):.0f}" for z in _giveups[:4])
+            _more = f" and {len(_giveups) - 4} more" if len(_giveups) > 4 else ""
+            st.warning(
+                f"**Abrupt narrowing at Z {_zs} mm{_more}.** The outline "
+                "suddenly gets much smaller there. A neck or a step that sits "
+                "inside the wall below is followed; anything off to one side "
+                "keeps printing the ring below instead. Check the preview at "
+                "that height before printing.",
+                icon=":material/compress:")
 
         layers = result["layers"]
         gcode_str = result["gcode"]
@@ -1561,52 +1827,68 @@ if mode == "Slice STL":
             help="Narrow the range to inspect specific layers — e.g. just the base "
                  "to confirm the stagger.")
 
-        # Shaded, Orca-style preview: each extrusion run becomes a lit ribbon
-        # one layer tall, so the toolpath reads as a solid printed object.
-        # Staggered base layers alternate two blues so the offset is visible.
-        runs = {"base A": [], "base B": [], "walls": []}
-        base_idx = 0
-        for li, layer in enumerate(layers):
-            is_base = (layer["type"] == "bottom")
-            if is_base:
-                key = "base A" if base_idx % 2 == 0 else "base B"
-                base_idx += 1
-            else:
-                key = "walls"
-            if not (lo <= li <= hi):
-                continue
-            for path in layer["paths"]:
-                if path is None:
-                    continue
-                coords = np.asarray(path.coords)
-                if len(coords) < 2:
-                    continue
-                if layer["type"] == "vase":
-                    zline = np.linspace(layer["z"], layer["z"] + res_lh, len(coords))
+        # The bead mesh is the other big per-rerun cost (0.6-2 s native for a
+        # default slice), and it depends only on this slice, the layer range,
+        # the two preview colours and the bed outline. Keep the last figure
+        # and reuse it when none of those changed. Single entry: a figure is
+        # 9-55 MB of mesh. The theme is deliberately NOT in the key, because
+        # toolpath_figure does not use it, so a theme switch costs nothing.
+        res_md5 = result.get("md5") or gcode_md5(gcode_str)
+        _fig_key = (res_md5, result["key"], lo, hi, BASE_CLR, CLAY,
+                    float(profile["bed_x"]), float(profile["bed_y"]))
+        _fig_cached = st.session_state.get("_slice_fig")
+        if _fig_cached and _fig_cached[0] == _fig_key:
+            fig = _fig_cached[1]
+        else:
+            # Shaded, Orca-style preview: each extrusion run becomes a lit ribbon
+            # one layer tall, so the toolpath reads as a solid printed object.
+            # Staggered base layers alternate two blues so the offset is visible.
+            runs = {"base A": [], "base B": [], "walls": []}
+            base_idx = 0
+            for li, layer in enumerate(layers):
+                is_base = (layer["type"] == "bottom")
+                if is_base:
+                    key = "base A" if base_idx % 2 == 0 else "base B"
+                    base_idx += 1
                 else:
-                    zline = np.full(len(coords), layer["z"])
-                runs[key].append((coords[:, 0], coords[:, 1], zline))
+                    key = "walls"
+                if not (lo <= li <= hi):
+                    continue
+                for path in layer["paths"]:
+                    if path is None:
+                        continue
+                    coords = np.asarray(path.coords)
+                    if len(coords) < 2:
+                        continue
+                    if layer["type"] == "vase":
+                        zline = np.linspace(layer["z"], layer["z"] + res_lh, len(coords))
+                    else:
+                        zline = np.full(len(coords), layer["z"])
+                    runs[key].append((coords[:, 0], coords[:, 1], zline))
 
-        # base A = chosen base color, base B = a lighter tint so the stagger
-        # stays visible even when base color is set equal to the clay color.
-        fig = toolpath_figure(
-            [("base A", runs["base A"], BASE_CLR, True),
-             ("base B", runs["base B"], _lighten(BASE_CLR), True),
-             ("walls", runs["walls"], CLAY, False)],
-            res_lh, profile["bed_x"], profile["bed_y"], height=560,
-            bead_width=res_noz)
+            # base A = chosen base color, base B = a lighter tint so the stagger
+            # stays visible even when base color is set equal to the clay color.
+            fig = toolpath_figure(
+                [("base A", runs["base A"], BASE_CLR, True),
+                 ("base B", runs["base B"], _lighten(BASE_CLR), True),
+                 ("walls", runs["walls"], CLAY, False)],
+                res_lh, profile["bed_x"], profile["bed_y"], height=560,
+                bead_width=res_noz)
+            st.session_state._slice_fig = (_fig_key, fig)
         # Stable key + uirevision keep the camera fixed when the layer range
         # slider changes — only the geometry updates, the zoom/angle stays put.
         st.plotly_chart(fig, use_container_width=True, key="slice_preview")
 
         with st.expander("Validation report", expanded=True, icon=":material/verified:"):
-            render_validation(gcode_str, profile, nozzle=res_noz, layer_height=res_lh)
+            rep = render_validation(gcode_str, profile, nozzle=res_noz, layer_height=res_lh,
+                                    md5=res_md5, printer=printer_name)
 
+        _blocked = download_blocked(rep, key=f"dl_anyway_slice_{res_md5[:12]}")
         st.download_button(
             "Download G-code", gcode_str,
             file_name=result["name"] + ".gcode", icon=":material/download:",
             mime="text/plain", use_container_width=True, type="primary",
-            disabled=stale)
+            disabled=stale or _blocked)
     render_footer()
     st.stop()
 
@@ -1620,21 +1902,39 @@ if mode == "Validate G-code":
     gfile = st.file_uploader("G-code file", type=["gcode", "gco", "g", "nc", "txt"],
                              label_visibility="collapsed")
 
-    # Or validate one of the factory files shipped with the printer.
+    def _decode_gcode(raw):
+        # UTF-8 first; older files (the bundled sample among them) carry a
+        # cp1252 dash in a comment, which errors="ignore" turned into
+        # "sample � Coil Bowl" in the browser. Comments only: no G-code
+        # word is outside ASCII, so the check itself is unaffected.
+        try:
+            return raw.decode("utf-8")
+        except UnicodeDecodeError:
+            return raw.decode("cp1252", errors="replace")
+
+    # Or validate the sample G-code bundled with ClayShaper. It is NOT an
+    # Eazao factory file (the label used to say so): it is ClayShaper's own
+    # Coil Bowl output from an early engine (1.0 mm layers, made for the Eazao
+    # Potter, Eazao start block and mixing codes included).
     text = None
     source_name = None
-    factory = list_sample_gcodes()
-    if factory:
-        names = ["— choose an included Eazao G-code —"] + [n for n, _ in factory]
-        pick = st.selectbox("No file? Validate an included Eazao factory G-code:", names)
+    samples_g = list_sample_gcodes()
+    if samples_g:
+        names = ["Choose a sample G-code"] + [n for n, _ in samples_g]
+        pick = st.selectbox(
+            "No file? Validate ClayShaper's own sample G-code:", names,
+            help="An older ClayShaper slice of the Coil Bowl made for the Eazao "
+                 "Potter (1.0 mm layers, Eazao start codes). It is a demo "
+                 "file, not a factory file from Eazao, and it is only right "
+                 "for the Eazao Potter.")
         if gfile is None and pick != names[0]:
-            path = dict(factory)[pick]
-            with open(path, errors="ignore") as f:
-                text = f.read()
+            path = dict(samples_g)[pick]
+            with open(path, "rb") as f:
+                text = _decode_gcode(f.read())
             source_name = pick
 
     if gfile is not None:
-        text = gfile.getvalue().decode("utf-8", errors="ignore")
+        text = _decode_gcode(gfile.getvalue())
         source_name = gfile.name
 
     if text is not None:
@@ -1643,7 +1943,17 @@ if mode == "Validate G-code":
         # (the sidebar slider may be set for a different job).
         _m = re.search(r";Layer height:\s*([0-9.]+)", text)
         file_lh = float(_m.group(1)) if _m else layer_h
-        vrep = render_validation(text, profile, nozzle=nozzle, layer_height=file_lh)
+        text_md5 = gcode_md5(text)
+        # use_file_settings: a file sliced for a 1.6 mm bead, checked against
+        # the sidebar's 3.0 mm nozzle, used to read as half the expected flow
+        # (a false Flow CAUTION). The bead the file declares is used instead,
+        # and the preview below draws that bead too.
+        vrep = render_validation(text, profile, nozzle=nozzle, layer_height=file_lh,
+                                 md5=text_md5, printer=printer_name,
+                                 use_file_settings=True)
+        v_bead = vrep["stats"].get("line_width_used") or nozzle
+        if vrep["stats"].get("line_width_from_file"):
+            st.caption(f"Validated for a {v_bead:g} mm bead (from the file).")
 
         # Save the validated file under a new name (e.g. "bowl_checked.gcode").
         default_stem = os.path.splitext(source_name)[0].strip() + "_validated"
@@ -1658,18 +1968,18 @@ if mode == "Validate G-code":
                 file_name=(save_stem.strip() or default_stem) + ".gcode",
                 mime="text/plain", icon=":material/save:",
                 type="primary", use_container_width=True,
-                disabled=(vrep.verdict == "fail"),
-                help="Blocked while the file FAILs validation." if vrep.verdict == "fail" else None)
+                disabled=(vrep["verdict"] == "fail"),
+                help="Blocked while the file FAILs validation." if vrep["verdict"] == "fail" else None)
 
         # Shaded 3D preview of the actual G-code (base blue, walls clay).
         with st.spinner("Building toolpath preview…"):
-            tp = extract_toolpath(text)
+            tp = _toolpath_cached(text_md5, text)
             groups = []
             for kind, color in (("base", BASE_CLR), ("wall", CLAY)):
                 xs, ys, zs = tp[kind]
                 groups.append((kind, split_gapped(xs, ys, zs), color, kind == "base"))
             fig = toolpath_figure(groups, file_lh, profile["bed_x"], profile["bed_y"],
-                                  height=540, bead_width=nozzle)
+                                  height=540, bead_width=v_bead)
         st.plotly_chart(fig, use_container_width=True, key="validate_preview")
 
         with st.expander("Preview first 60 lines"):
@@ -1856,15 +2166,21 @@ prof_func = None
 if shape_type in ("Cylinder", "Bowl", "Vase"):
     prof_func = shape_profile_fn
 elif shape_type == "Virtual Wheel" and custom_profile_data is not None:
-    # Interpolate from the custom profile array
+    # Interpolate linearly between the drawing's samples. The old int(t * (N-1))
+    # lookup held the radius flat for ~2.8 turns (72 canvas bins over a 200-turn
+    # pot), then jumped by the whole step in one move: 52 consecutive-point
+    # jogs > 0.5 mm on a vase drawing (up to 3.2 mm), 9 mm on a stepped one.
+    # np.interp spreads the same change over every point (max 0.01 mm per move).
+    # A stroke touching the axis gave r = 0 in the wall, so the radius is held
+    # at 1.5 nozzles or more (a wall cannot be narrower than its own bead).
+    _vw_y = np.asarray(custom_profile_data, dtype=float)
+    _vw_x = np.linspace(0.0, 1.0, len(_vw_y))
+
     def profile_custom(t, r_max):
         # t is 0..1
-        # Map t to index
-        idx = int(t * (len(custom_profile_data) - 1))
-        idx = max(0, min(idx, len(custom_profile_data) - 1))
-        norm_r = custom_profile_data[idx]
-        return norm_r * r_max
-        
+        norm_r = float(np.interp(t, _vw_x, _vw_y))
+        return max(norm_r * r_max, 1.5 * nozzle)
+
     prof_func = profile_custom
 
 text_func = None
@@ -1878,22 +2194,35 @@ elif tex_type == "Image Map" and img_array is not None:
 if shape_type == "Handle":
     # Flat-printed handle(s): curve on the bed, strap width built up in Z.
     # Spacing is bed-aware so multiple copies stay inside the print area
-    # (footprint grows with extra beads).
+    # (footprint grows with extra beads). Copies must also stay clear of each
+    # other: the old code shrank the spacing to whatever fitted the bed, so
+    # 2-4 copies of a wide handle printed through one another (a 120 mm
+    # 3/4 Circle x2 on the 165 mm Potter bed was spaced 33 mm apart, 243
+    # points of copy 2 within one bead of copy 1). Now the gap between
+    # copies never drops below one bead plus 4 mm, and if the requested
+    # copies do not fit at that spacing we print fewer and say so.
     _beads = int(hd_beads)
     _w_eff = handle_w + (_beads - 1) * nozzle
+    _min_spacing = _w_eff + nozzle + 4.0
+    _room = profile["bed_x"] - 12.0 - _w_eff      # 6 mm margin each side
+    _copies = int(handle_copies)
+    if _copies > 1:
+        _fit = 1 + max(0, int((_room + 1e-9) // _min_spacing))
+        if _fit < _copies:
+            st.warning(f"Only {_fit} of {_copies} copies of a {handle_w:.0f} mm "
+                       f"handle fit side by side on this bed with a safe gap "
+                       f"between them, so {_fit} "
+                       f"{'copy' if _fit == 1 else 'copies'} will print. "
+                       "A narrower handle or fewer beads fits more.")
+            _copies = _fit
     _spacing = _w_eff + 16.0
-    if int(handle_copies) > 1:
-        _spacing = min(_spacing,
-                       (profile["bed_x"] - 12.0 - _w_eff) / (int(handle_copies) - 1))
-        if _spacing < _w_eff + nozzle + 2:
-            st.warning(f"{int(handle_copies)} copies of a {handle_w:.0f} mm handle "
-                       "are a squeeze on this bed — the copies print very close "
-                       "together. Fewer copies or a narrower handle is safer.")
+    if _copies > 1:
+        _spacing = max(_min_spacing, min(_spacing, _room / (_copies - 1)))
     clay_obj = generate_handle_path(
         style=handle_style, width=handle_w, height=handle_h,
         strap_width=strap_w, layer_height=layer_h, nozzle_diameter=nozzle,
         thickness_beads=_beads,
-        copies=int(handle_copies), spacing=_spacing,
+        copies=_copies, spacing=_spacing,
         first_layer_height=first_layer_h,
         kuksa_d=0.55 + 0.449 * (kuksa_dip / 100.0),
     )
@@ -1909,6 +2238,9 @@ else:
         profile_func=prof_func,
         texture_func=text_func,
         first_layer_height=first_layer_h,
+        # Periodic textures only: lets generate_spiral_path add points per turn
+        # when Ridges outrun Roundness (an image has no single frequency).
+        tex_freq=tex_freq if tex_type in ("Sine Waves", "Twist") else None,
     )
 
 # --- VISUALIZATION ---
@@ -2164,13 +2496,20 @@ gcode_str = generate_gcode(
 st.markdown('<div class="ez-step"><span class="ez-stepnum">✓</span> Validate & export '
             '<span class="ez-stepsub">checked automatically before every download</span></div>',
             unsafe_allow_html=True)
-render_validation(gcode_str, profile, nozzle=nozzle, layer_height=layer_h)
+# gcode_str is rebuilt every run, but it is identical whenever no shape
+# setting moved (preview toggles, simulator scrubbing, theme), so hashing it
+# lets the cached report answer instead of an 8-10 s browser revalidation.
+design_md5 = gcode_md5(gcode_str)
+design_rep = render_validation(gcode_str, profile, nozzle=nozzle, layer_height=layer_h,
+                               md5=design_md5, printer=printer_name)
 
 c_ex1, c_ex2 = st.columns(2)
 
 with c_ex1:
+    _design_blocked = download_blocked(design_rep, key=f"dl_anyway_design_{design_md5[:12]}")
     st.download_button("Download G-Code", gcode_str, file_name=design_name + ".gcode",
-                       icon=":material/download:", mime="text/plain", use_container_width=True)
+                       icon=":material/download:", mime="text/plain", use_container_width=True,
+                       disabled=_design_blocked)
 
 with c_ex2:
     # Generate STL on demand; the result lives in session so the download
@@ -2178,16 +2517,18 @@ with c_ex2:
     if shape_type == "Handle":
         st.caption("Handles export as G-code (the STL mesher is built for "
                    "revolved vessels).")
+    elif not HAS_NUMPY_STL:
+        st.caption("STL export is not available in this version. The G-code "
+                   "download is everything the printer needs.")
     elif st.button("Generate STL Model", use_container_width=True):
         with st.spinner("Meshing STL..."):
             with tempfile.NamedTemporaryFile(suffix=".stl", delete=False) as tmp:
                 try:
                     success = generate_stl_from_path(clay_obj, tmp.name)
                 except ImportError:
-                    # numpy-stl isn't bundled in the web build.
                     success = False
-                    st.info("STL export ships with the desktop build — the "
-                            "G-code download above is everything the printer needs.")
+                    st.info("STL export needs the numpy-stl package. The "
+                            "G-code download is everything the printer needs.")
                 tmp_path = tmp.name
             if success:
                 with open(tmp_path, "rb") as f:

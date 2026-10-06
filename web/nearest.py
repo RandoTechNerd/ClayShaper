@@ -13,13 +13,53 @@ two things from it, both on small data:
 
 Both are exact drop-in replacements for how the engine calls them, so slicing
 and validation results are unchanged.
+
+Update (v1.0.14 review): the "keep scipy out" reason turned out to be gone.
+index.html has to load scipy anyway, because trimesh.section() imports it to
+chain section edges, so this stand-in saved no download at all, and its
+brute-force distance matrix became the single biggest hotspot in a slice.
+Profiled natively it was 10.4 s of 30.0 s on Octopus Vase (slice + validate)
+and 18.2 s of 55.5 s on Paper Bag. In Pyodide 0.27.6 swapping in the real
+cKDTree took Octopus from 66.8 s to 27.1 s and Twist Pot from 14.2 s to
+10.3 s, with byte-identical G-code. So NearestPoints() now hands back
+scipy's cKDTree when scipy imports, and only falls back to the numpy class
+below when it does not (a desktop Python without scipy). Both return the
+same nearest index; the regression harness checks the G-code SHA is
+unchanged on every quick-suite case.
 """
 
 import numpy as np
 
+try:
+    # Guarded on purpose: this is the only direct scipy import in the engine.
+    # scipy ships as a prebuilt Pyodide wheel, but if it ever fails to load
+    # the slicer must still work, just slower.
+    from scipy.spatial import cKDTree as _cKDTree
+except Exception:          # ImportError, or a broken wheel raising at import
+    _cKDTree = None
 
-class NearestPoints:
-    """Drop-in for scipy.spatial.cKDTree limited to the .query() we use."""
+
+def NearestPoints(pts):
+    """Nearest-point index over `pts`: cKDTree when available, else numpy.
+
+    Both expose .query(q) -> (distance, index) with cKDTree's shape rules.
+    An empty point set is refused here, up front. cKDTree would otherwise
+    build happily and then answer every query with distance inf and index
+    len(pts) (one past the end), which the callers would use to index the
+    ring and crash far away from the real cause, or silently read garbage.
+    """
+    pts = np.asarray(pts, dtype=float)
+    if pts.ndim != 2 or len(pts) == 0:
+        raise ValueError("NearestPoints: empty point set")
+    if _cKDTree is not None:
+        return _cKDTree(pts)
+    return NumpyNearest(pts)
+
+
+class NumpyNearest:
+    """Drop-in for scipy.spatial.cKDTree limited to the .query() we use.
+
+    Fallback for when scipy is missing (see NearestPoints above)."""
 
     def __init__(self, pts):
         self.pts = np.asarray(pts, dtype=float)
@@ -40,7 +80,7 @@ class NearestPoints:
         idx = np.empty(n, dtype=np.intp)
         P = self.pts
         if len(P) == 0:
-            raise ValueError("NearestPoints: empty point set")
+            raise ValueError("NumpyNearest: empty point set")
         for s in range(0, n, chunk):
             e = min(s + chunk, n)
             diff = q[s:e, None, :] - P[None, :, :]

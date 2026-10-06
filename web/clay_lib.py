@@ -29,7 +29,11 @@ def generate_spiral_path(
     profile_func=None,
     texture_func=None,
     first_layer_height=None,
+    tex_freq=None,
 ):
+    """tex_freq: ridges per revolution of a periodic texture (Sine / Twist).
+    When given, the wall may be sampled finer than `sides` so the texture is
+    traced instead of aliased (see the wall section below)."""
     clay = ClayObj()
     clay.layer_height = layer_height
     clay.first_layer_height = first_layer_height or layer_height
@@ -48,7 +52,13 @@ def generate_spiral_path(
         base_bottom_radius = base_top_radius
 
     # --- 1. BASE GENERATION (Alternating Spiral Autofill) ---
-    num_base_layers = int(base_height / layer_height)
+    # The Base Height slider steps by layer_height, so base_height is meant to
+    # be a whole number of layers, but the division lands just under it in
+    # float (1.2 / 0.4 = 2.9999999999999996) and int() silently dropped a
+    # layer: 16 slider values lose one at lh 0.4, 8 at lh 0.8. The epsilon
+    # only rescues those; an off-grid value such as the 4.0 default at lh 0.6
+    # (6.67) still floors to 6 layers exactly as before.
+    num_base_layers = int(math.floor(base_height / layer_height + 1e-6))
     if num_base_layers > 0:
         for layer in range(num_base_layers):
             curr_z = (layer + 1) * layer_height
@@ -93,16 +103,75 @@ def generate_spiral_path(
 
     # --- 2. WALL GENERATION (Vase Mode) ---
     start_z = num_base_layers * layer_height
+    # No base (Base Height 0, open-bottom rings and sleeves): the wall used to
+    # ramp up from Z 0, which the first-layer shift below turned into
+    # flh - lh: Z-0.300 at flh 0.3 / lh 0.6 (nozzle driven into the bed),
+    # Z0.000 when flh == lh, and Z0.400 at the default flh 1.0 while E was
+    # sized for a 1.0 mm bead. Instead lay one flat ring at layer 1 (flh after
+    # the shift, first-layer bead and flow) and start the spiral from there,
+    # exactly as the wall climbs off the last base layer when there is a base.
+    # The ramp then covers one layer less, so the pot is not a layer taller.
+    flat_first_ring = num_base_layers == 0
+    if flat_first_ring:
+        start_z = layer_height
     wall_height = total_height - start_z
-    
+
     if wall_height > 0:
         layers = int(wall_height / layer_height)
-        total_points = layers * sides
-        
+        if flat_first_ring:
+            # Ring + ramp = the turn count the old ramp had. Recomputing it
+            # from (H - lh) / lh instead differs by one turn, either way, on
+            # 0.24% of slider (H, lh) pairs through float rounding.
+            layers = int(total_height / layer_height) - 1
+
+        # Texture oversampling. The wall used to be sampled at `sides` points
+        # per turn whatever the texture, so Ridges above about sides/4 turned
+        # into a 57-86 deg zigzag at every point (Sine 30 @ 90 sides, Potter:
+        # 54.7 hitches/min on Eazao classic jerk, 71.4 on the Tronxy model),
+        # freq 45 @ 90 put every sample on a zero and the ridges vanished, and
+        # freq 60 @ 90 came out as freq 30 phase-inverted. 12 points per ridge
+        # (360 sides at freq 30) measured 0.1-0.4 hitches/min on every classic
+        # jerk preset and the Tronxy. Under junction deviation at Eazao's
+        # 300 mm/s^2 the ridge crests themselves (1.3 mm radius at amp 3) still
+        # slow the head at any chord >= 1 mm; only ~0.65 mm chords clear that,
+        # and those push classic jerk back over 5/min, so the 1 mm floor stays.
+        # At 7+ points per ridge the user's roundness is already fine, which
+        # keeps the default (12 @ 90) byte-identical. The extra points are
+        # capped so the shortest chord, on the widest turn's deepest groove,
+        # stays >= 1 mm (line rate and firmware MIN_STEPS merging), and never
+        # drop below `sides`.
+        wall_sides = sides
+        if tex_freq and sides < 7 * tex_freq:
+            r_ref = 0.0
+            n_ang = max(360, int(16 * tex_freq))
+            for k in range(41):
+                tk = k / 40.0
+                rb = profile_func(tk, body_base_radius) if profile_func else body_base_radius
+                off = 0.0
+                if texture_func:
+                    off = min(texture_func(tk, j / n_ang * 2 * math.pi) for j in range(n_ang))
+                r_ref = max(r_ref, rb + off)
+            seg_cap = int(math.floor(2 * math.pi * r_ref / 1.0))
+            wall_sides = max(sides, min(720, int(math.ceil(12 * tex_freq)), seg_cap))
+
+        total_points = layers * wall_sides
+
+        if flat_first_ring and layers > 0:
+            # Same profile/texture as the ramp's first turn (t = 0), so the
+            # ring closes onto the ramp's first point with no seam step.
+            for i in range(wall_sides):
+                angle = (i / wall_sides) * 2 * math.pi
+                r_final = body_base_radius
+                if profile_func:
+                    r_final = profile_func(0.0, body_base_radius)
+                if texture_func:
+                    r_final += texture_func(0.0, angle)
+                clay.add_point(r_final * math.cos(angle), r_final * math.sin(angle), start_z)
+
         for i in range(total_points):
-            t_wall_norm = i / total_points 
+            t_wall_norm = i / total_points
             current_z = start_z + t_wall_norm * wall_height
-            angle = (i / sides) * 2 * math.pi
+            angle = (i / wall_sides) * 2 * math.pi
             
             # Base Radius from Profile
             r_base = body_base_radius
@@ -266,6 +335,16 @@ def generate_handle_path(style="Half Circle", width=60.0, height=35.0,
                 c = _densify_poly(c, max(len(curve), 60))
             passes.append(c if k % 2 == 0 else c[::-1])
         layer_pts = np.vstack(passes)
+
+    # Centre the handle on Y = 0 (after the bead offsets, which widen it on
+    # both sides). The curve used to run from Y = 0 to Y = +height, so it was
+    # placed from bed centre towards +Y only: a reach-90 handle on the
+    # 165 mm Potter bed ended at Y = 172.5 and a 120 mm Half Square at 202.5,
+    # both off the bed (Bounds FAIL). Centred, the same handles span
+    # +/-45 and +/-60 mm around bed centre. A pure Y shift, so a single copy
+    # prints exactly as before, just centred.
+    ymid = (float(layer_pts[:, 1].min()) + float(layer_pts[:, 1].max())) / 2.0
+    layer_pts = layer_pts - np.array([0.0, ymid])
 
     for ci in range(copies):
         x0 = (ci - (copies - 1) / 2.0) * spacing
@@ -621,6 +700,21 @@ def generate_gcode(clay_obj, offset_x=0.0, offset_y=0.0, profile=None, line_widt
     points = clay_obj.to_numpy()
     if len(points) == 0:
         return ""
+    points = np.array(points, dtype=float)   # own copy: the clamp below edits Z
+
+    flh = getattr(clay_obj, "first_layer_height", clay_obj.layer_height)
+    # Safety net: never extrude into the bed. With Base Height 0 the Design
+    # wall used to start at Z = flh - lh (Z0.000 when they are equal, Z-0.293
+    # at flh 0.3 / lh 0.6) and the validator passed it. The root fix lives in
+    # generate_spiral_path; this clamp only catches anything that still gets
+    # through. Half the first layer is the floor: a real first layer never
+    # sits that low, so a correct path is never touched.
+    z_floor = 0.5 * flh
+    low = points[:, 2] < z_floor - 1e-9
+    n_clamped = int(low.sum())
+    if n_clamped:
+        points[low, 2] = z_floor
+    clay_obj.z_clamped = n_clamped
 
     # Volumetric extrusion: E advances by (bead volume / filament cross-section).
     # bead volume per mm of travel = layer_height * line_width.
@@ -642,6 +736,15 @@ def generate_gcode(clay_obj, offset_x=0.0, offset_y=0.0, profile=None, line_widt
     if first_layer_flow != 1.0:
         g.append(f";First layer flow: {first_layer_flow*100:.0f}%")
     g.append(f";Layer height: {clay_obj.layer_height:g}")
+    # The first layer (and, when a separate base height exists, the base) is
+    # thicker than the wall: 1.0 vs 0.6 mm at the defaults, so it runs 1.25
+    # E/mm against the wall's 0.75. Without this line the validator judges
+    # that bead against the wall layer and calls every pot 50 mm or shorter
+    # a sustained over-extrusion CAUTION, because the first layer is then
+    # over 10% of the path. Same header the STL slicer writes.
+    base_lh = max(flh, getattr(clay_obj, "base_layer_height", clay_obj.layer_height))
+    if abs(base_lh - clay_obj.layer_height) > 1e-9:
+        g.append(f";Base layer height: {base_lh:g}")
     g.append(f";Line width: {line_width:g}")
     g.append(f";MINX:{xs.min():.2f}")
     g.append(f";MINY:{ys.min():.2f}")
@@ -649,6 +752,9 @@ def generate_gcode(clay_obj, offset_x=0.0, offset_y=0.0, profile=None, line_widt
     g.append(f";MAXX:{xs.max():.2f}")
     g.append(f";MAXY:{ys.max():.2f}")
     g.append(f";MAXZ:{zs.max():.2f}")
+    if n_clamped:
+        g.append(f";WARNING: {n_clamped} extruding points were below half the first layer "
+                 f"height and were raised to Z{z_floor:g}")
     g.append(profile["start_gcode"])
 
     total_e = 0.0
@@ -661,19 +767,30 @@ def generate_gcode(clay_obj, offset_x=0.0, offset_y=0.0, profile=None, line_widt
     g.append(f"G1 F{f_z} Z{sz:.3f}")
     g.append(f"G1 F{f_print} E0")
 
-    flh = getattr(clay_obj, "first_layer_height", clay_obj.layer_height)
     first_layer_top = flh + 1e-6
     travels = getattr(clay_obj, "travel_idx", None) or set()
+    max_z_printed = float(sz)
     for i in range(1, len(points)):
         p_prev = points[i - 1]
         p_curr = points[i]
 
         if i in travels:
             # Non-extruding hop (e.g. between handle copies): lift, move, drop.
+            # Lift clear of EVERYTHING printed so far, not just the last point,
+            # and move XY only at that height. The old hop rose 5 mm above the
+            # previous point and then dropped diagonally to cz+2, which on a
+            # 2-bead Half Circle handle dragged the nozzle 9.45 mm deep
+            # through copy 1's other foot. The plunge is a pure Z move at
+            # z_speed, and F is then set back to print speed: G0 and G1 share
+            # one modal feedrate in Marlin, so without it copies 2-4 printed
+            # at F300 (5 mm/s) instead of F1500.
             cx, cy, cz = p_curr[0] + offset_x, p_curr[1] + offset_y, p_curr[2]
-            g.append(f"G0 F{f_print} Z{p_prev[2] + 5:.3f}")
-            g.append(f"G0 F{f_print} X{cx:.3f} Y{cy:.3f} Z{cz + 2:.3f}")
+            hop_z = max_z_printed + 5
+            g.append(f"G0 F{f_print} Z{hop_z:.3f}")
+            g.append(f"G0 X{cx:.3f} Y{cy:.3f}")
             g.append(f"G1 F{f_z} Z{cz:.3f}")
+            g.append(f"G1 F{f_print}")
+            max_z_printed = max(max_z_printed, float(cz))
             continue
 
         dist = float(np.linalg.norm(p_curr - p_prev))
@@ -685,6 +802,8 @@ def generate_gcode(clay_obj, offset_x=0.0, offset_y=0.0, profile=None, line_widt
 
         cx, cy, cz = p_curr[0] + offset_x, p_curr[1] + offset_y, p_curr[2]
         g.append(f"G1 X{cx:.3f} Y{cy:.3f} Z{cz:.3f} E{total_e:.5f}")
+        if cz > max_z_printed:
+            max_z_printed = float(cz)
 
     g.append(profile["end_gcode"])
     return "\n".join(g)

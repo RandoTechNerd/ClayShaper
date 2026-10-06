@@ -3,9 +3,10 @@
 **A free ceramic slicer for clay 3D printers.**
 
 ClayShaper turns 3D models into clay printing files. It handles the things clay
-needs and normal slicers get wrong: one continuous bead with no retractions, a
-solid base that actually bonds, softening for tricky folds, and a safety check
-that catches bad files before they reach your machine.
+needs and normal slicers get wrong: walls laid as one continuous spiral bead
+with no seam and no stop between layers, a solid base that actually bonds,
+softening for tricky folds, and a safety check that catches bad files before
+they reach your machine.
 
 [**Download for Windows**](../../releases/latest) &nbsp;·&nbsp;
 [**Use it in your browser**](https://clayshaper.com/) &nbsp;·&nbsp;
@@ -37,9 +38,11 @@ anyway**. This appears because the app is not code signed yet, which is simply
 an expensive certificate. The full source code is right here in this repository
 if you would like to check it.
 
-**The first launch takes about 20 to 30 seconds** and needs internet that one
-time while it sets itself up. Every launch after that opens in a couple of
-seconds, and your models never leave your computer.
+**The first launch takes about 20 to 30 seconds** while it sets itself up.
+Launches after that open in a couple of seconds. For now it still needs an
+internet connection each time it starts (it checks for its Python packages
+online); starting fully offline is planned for a later update. Your models
+never leave your computer.
 
 <br>
 
@@ -57,7 +60,7 @@ browser tab, so your designs stay private. Works on Windows, Mac, and Linux.
 ## What it does
 
 **Slice a 3D model**
-Load an STL or 3MF file (or pick one of the five included samples) and get a clay
+Load an STL or 3MF file (or pick one of the six included samples) and get a clay
 toolpath. Vase mode prints the whole wall as one unbroken spiral. The staggered
 base lays the bottom down so it grips instead of peeling. Fold softening tames
 steep creases so crumpled shapes still print.
@@ -79,7 +82,7 @@ Tuned for the **Eazao Potter** (165 x 165 x 280 mm). The **Tronxy Moore 2 Pro**
 uses the 3.0 mm E-scale of the Tronxy Cura profile, Test B the 1.75 mm scale
 Eazao uses, and nothing else differs. Try A first and report back which one
 lays down the right amount of clay. You can add your own printer from the
-sidebar.
+sidebar; for now it is kept only until the page is reloaded or the app closed.
 
 <br>
 

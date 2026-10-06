@@ -25,6 +25,7 @@ _CATEGORIES = {
     "Coil Bowl": "Classics",
     "Ripple Cup": "Classics",
     "Cuboid": "Classics",      # RandoTechNerd original
+    "Cuboid Simple": "Classics",  # RandoTechNerd original
     "Belly Vase": "Vase",
     "Twist Pot": "Vase",
 }
